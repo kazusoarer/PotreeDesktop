@@ -52,8 +52,18 @@
 
 		let exitCode = null;
 		if (child) child.on('exit', (code) => { exitCode = code; });
+		check('B02b 進捗 UI が表示される', $('#pcs_publish_status').is(':visible') &&
+			$('#pcs_site_publish').prop('disabled'));
+		// 実行中に工程表示が更新されること
+		await until(() => $('#pcs_publish_step').text().includes('工程'), 120000, '工程表示');
+		check('B02c 工程がリアルタイム表示', $('#pcs_publish_step').text().includes('工程'),
+			$('#pcs_publish_step').text());
 		const done = await until(() => exitCode !== null, 240000, '公開スクリプト完走');
 		check('B03 公開スクリプトが最後まで走る (exit 0)', done && exitCode === 0, `exit=${exitCode}`);
+		await sleep(300);
+		check('B03b 完了表示 + ログに内容', $('#pcs_publish_step').text().includes('完了') &&
+			$('#pcs_publish_log').text().length > 100, $('#pcs_publish_step').text());
+		check('B03c ボタンが復帰', !$('#pcs_site_publish').prop('disabled'));
 
 		// dry-run 成果物: 直近の case-* viewer に scene 入り viewer-config がある
 		const work = 'C:\\potree_share\\_work';

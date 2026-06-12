@@ -386,14 +386,68 @@
 			'-ProjectName', a.projectName,
 		];
 		if (dryRun) args.push('-SkipDeploy');
-		else args.unshift('-NoExit');   // 進捗ウィンドウを閉じず URL を確認できるように
+		// 進捗は別ウィンドウではなく左パネル内に表示する (= 何をしているか・どこで
+		// エラーになったかが常に見える。 2026-06-13 ユーザー指摘)
 		const { spawn } = window.require('child_process');
-		const child = spawn(pwshPath(), args, {
-			cwd: 'C:\\potree_share', detached: !dryRun, stdio: 'ignore', windowsHide: false,
-		});
-		child.on('error', (e) => setWarn('公開の起動に失敗: ' + e.message));
+		const child = spawn(pwshPath(), args, { cwd: 'C:\\potree_share', windowsHide: true });
 		window.PCS_PROJECT._lastPublish = child;   // テスト検証用
-		if (!dryRun) child.unref();
+		beginPublishUI();
+		let raw = [];
+		const onChunk = (buf) => { raw.push(buf); renderPublishLog(Buffer.concat(raw)); };
+		if (child.stdout) child.stdout.on('data', onChunk);
+		if (child.stderr) child.stderr.on('data', onChunk);
+		child.on('error', (e) => endPublishUI(-1, Buffer.from('公開の起動に失敗: ' + e.message)));
+		child.on('exit', (code) => endPublishUI(code, Buffer.concat(raw)));
+	}
+
+	// ---------- 公開の進捗 UI ----------
+	function decodeConsole(buf) {
+		// pwsh の pipe 出力は環境により UTF-8 / cp932 が混在するため、 化けの少ない方を採用
+		const u = new TextDecoder('utf-8').decode(buf);
+		const s = new TextDecoder('shift_jis').decode(buf);
+		const bad = (t) => (t.match(/�/g) || []).length;
+		return bad(u) <= bad(s) ? u : s;
+	}
+	function stripAnsi(t) {
+		return t.replace(/\x1b\[[0-9;]*m/g, '');
+	}
+	function beginPublishUI() {
+		$('#pcs_site_publish').prop('disabled', true).val('公開中…');
+		$('#pcs_publish_status').show();
+		$('#pcs_publish_result').hide();
+		$('#pcs_publish_step').text('公開を開始しています…').css('color', '');
+		$('#pcs_publish_log').text('');
+	}
+	function renderPublishLog(buf) {
+		const text = stripAnsi(decodeConsole(buf));
+		const lines = text.split(/\r?\n/).filter(l => l.trim() !== '');
+		// 現在の工程 = 最後の "==[ ... ]==" 行
+		for (let i = lines.length - 1; i >= 0; i--) {
+			const m = lines[i].match(/==\[\s*(.+?)\s*\]==/);
+			if (m) { $('#pcs_publish_step').text('工程: ' + m[1]); break; }
+		}
+		const el = document.getElementById('pcs_publish_log');
+		if (el) {
+			el.textContent = lines.slice(-80).join('\n');
+			el.scrollTop = el.scrollHeight;
+		}
+	}
+	function endPublishUI(code, buf) {
+		$('#pcs_site_publish').prop('disabled', false).val('URL 公開');
+		renderPublishLog(buf);
+		const text = stripAnsi(decodeConsole(buf));
+		if (code === 0) {
+			const m = text.match(/(https:\/\/[a-z0-9.-]+\.pages\.dev\/?)/i);
+			if (m) {
+				$('#pcs_publish_step').text('公開完了').css('color', '#7CFC9B');
+				$('#pcs_publish_url').text(m[1]);
+				$('#pcs_publish_result').show();
+			} else {
+				$('#pcs_publish_step').text(text.includes('Dry run') ? 'Dry run 完了' : '完了 (URL はログ参照)').css('color', '#7CFC9B');
+			}
+		} else {
+			$('#pcs_publish_step').text('エラーで停止しました (下のログの赤字を確認)').css('color', '#ff8a80');
+		}
 	}
 
 	function pickProjectFile() {
@@ -496,6 +550,15 @@
 					<input id="pcs_site_publish" type="button" value="URL 公開" style="flex:1;"
 						title="Cloudflare に限定 URL で公開 (30 日で自動削除)。 いまの計測・クリッピング・視点もそのまま相手に表示されます"/>
 				</span>
+				<div id="pcs_publish_status" style="display:none; padding:4px 0;">
+					<div id="pcs_publish_step" style="font-weight:bold; padding-bottom:3px;"></div>
+					<div id="pcs_publish_log" style="font-family:Consolas,monospace; font-size:85%; max-height:120px; overflow:auto;
+						background:rgba(0,0,0,0.3); padding:4px 6px; white-space:pre-wrap; word-break:break-all;"></div>
+					<div id="pcs_publish_result" style="display:none; padding-top:4px;">
+						<input id="pcs_publish_copy" type="button" value="URL をコピー" style="width:auto;"/>
+						<div id="pcs_publish_url" style="word-break:break-all; padding-top:3px; color:#9adcff;"></div>
+					</div>
+				</div>
 				<div class="divider"><span>現場一覧</span></div>
 				<input id="pcs_site_search" type="text" placeholder="現場名で検索…" style="width:100%; box-sizing:border-box;"/>
 				<div id="pcs_site_list" style="max-height:180px; overflow:auto;"></div>
@@ -511,6 +574,10 @@
 		$('#pcs_site_new').click(() => newSite());
 		$('#pcs_site_openfile').click(() => pickProjectFile());
 		$('#pcs_site_publish').click(() => publishSite());
+		$('#pcs_publish_copy').click(() => {
+			const url = $('#pcs_publish_url').text();
+			if (url) navigator.clipboard.writeText(url);
+		});
 		$('#pcs_site_search').on('input', refreshList);
 		// 作業中の現場名もダブルクリックでリネーム
 		$('#pcs_site_name').on('dblclick', function () {
