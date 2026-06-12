@@ -195,10 +195,7 @@
 				}
 			});
 		}
-		if (newly > 0) {
-			refreshSimaList();
-			setStatus(`境界の点群を着色: 計 ${SIMA_ENTRIES.filter(e => e.active).reduce((s, e) => s + e.matched, 0).toLocaleString()} 点`);
-		}
+		if (newly > 0) refreshSimaList();
 	}
 
 	function ensureProcessTimer() {
@@ -235,6 +232,32 @@
 		refreshSimaList();
 	}
 
+	// 読込後の線色変更: 着色済みの点 (対象は幅不変なので同じ) を新色で塗り直すだけ。
+	// backup の元色はそのまま保持されるため、 後から戻る/削除しても完全復元できる。
+	function setEntryColor(entry, hex) {
+		entry.colorHex = hex;
+		entry.rgb = hexToRgb(hex);
+		for (const [geo, b] of entry.backups) {
+			const arr = b.attr.array;
+			const stride = b.attr.itemSize;
+			for (const i of b.indices) {
+				const o = i * stride;
+				arr[o] = entry.rgb[0];
+				arr[o + 1] = entry.rgb[1];
+				arr[o + 2] = entry.rgb[2];
+			}
+			b.attr.needsUpdate = true;
+		}
+	}
+
+	// ラベルのリネーム (表示名のみ。 着色・履歴には影響しない)
+	function renameEntry(entry, name) {
+		const v = (name || '').trim();
+		if (!v) return;
+		entry.label = v;
+		refreshSimaList();
+	}
+
 	// 読込後の線幅変更: 元色に戻してから新しい幅で即座に着色し直す
 	function setEntryWidth(entry, w) {
 		if (!isFinite(w) || w <= 0) { setStatus('線幅は 0 より大きい数値 (m) で指定してください', true); return; }
@@ -247,7 +270,6 @@
 			ensureProcessTimer();
 			processEntries();
 		}
-		setStatus(`線幅 ${w} m で着色し直しました (${entry.matched.toLocaleString()} 点)`);
 	}
 
 	function activateEntry(entry) {
@@ -447,17 +469,34 @@
 		for (const en of SIMA_ENTRIES) {
 			const row = $(`
 				<div style="display:flex; align-items:center; gap:5px; padding:2px 0;">
-					<span style="display:inline-block; width:12px; height:12px; background:${en.colorHex}; border:1px solid #888; flex:none;"></span>
-					<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
-						title="${en.matched.toLocaleString()} 点を着色">${en.label}${en.active ? '' : ' (非表示)'}</span>
+					<input type="color" class="pcs-row-color" value="${en.colorHex}"
+						style="width:26px; height:20px; padding:0; flex:none;" title="線色 (変更すると即反映)"/>
+					<span class="pcs-row-label" style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
+						title="${en.matched.toLocaleString()} 点を着色"></span>
 					<input type="number" class="pcs-row-width" value="${en.widthM}" min="0.05" step="0.05"
 						style="width:56px;" title="着色線幅 (m)。 変更すると即座に着色し直します"/>
 					<span>m</span>
-					<input type="button" value="削除" style="width:auto;"/>
+					<input type="button" class="pcs-row-rename" value="名前" style="width:auto;" title="表示名を変更"/>
+					<input type="button" class="pcs-row-del" value="削除" style="width:auto;"/>
 				</div>
 			`);
+			row.find('.pcs-row-label').text(en.label + (en.active ? '' : ' (非表示)'));
+			row.find('.pcs-row-color').on('input change', function () { setEntryColor(en, this.value); });
 			row.find('.pcs-row-width').on('change', function () { setEntryWidth(en, parseFloat(this.value)); });
-			row.find('input[type="button"]').click(() => { deleteEntry(en); setStatus('着色を解除しました'); });
+			row.find('.pcs-row-rename').click(() => {
+				const span = row.find('.pcs-row-label');
+				const inp = $('<input type="text" style="flex:1; min-width:60px;">').val(en.label);
+				span.replaceWith(inp);
+				inp.focus().select();
+				let done = false;
+				const commit = () => { if (done) return; done = true; renameEntry(en, inp.val()); };
+				inp.on('keydown', (ev) => {
+					if (ev.key === 'Enter') commit();
+					else if (ev.key === 'Escape') { done = true; refreshSimaList(); }
+				});
+				inp.on('blur', commit);
+			});
+			row.find('.pcs-row-del').click(() => { deleteEntry(en); setStatus('着色を解除しました'); });
 			el.append(row);
 		}
 	}
@@ -513,7 +552,7 @@
 	// 自動テスト・将来機能用の内部 handle
 	window.PCS_TOOLS = {
 		parseSima, importSimaText, importSimaFromPath,
-		undo, redo, processEntries, setEntryWidth,
+		undo, redo, processEntries, setEntryWidth, setEntryColor, renameEntry,
 		get simaEntries() { return SIMA_ENTRIES; },
 		get undoCount() { return undoStack.length; },
 		get redoCount() { return redoStack.length; },

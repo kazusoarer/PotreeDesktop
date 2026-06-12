@@ -148,6 +148,29 @@
 		check('C22 幅を戻すと隣接列は元色に復元', green.widthM === 0.1 && isColor(pointColorAt(637840, 851120.5, 440, 455), 120, 120, 120),
 			JSON.stringify(pointColorAt(637840, 851120.5, 440, 455)));
 
+		// ---- 事後の線色変更 (一覧のカラーピッカー) ----
+		const cInput = $('#pcs_sima_list .pcs-row-color');
+		check('C23 一覧にカラーピッカー', cInput.length === 1 && cInput.val() === '#00cc00');
+		cInput.val('#0000ff').trigger('input');
+		await sleep(100);
+		check('C24 緑 → 青へ即時変更', green.colorHex === '#0000ff' && isColor(pointColorAt(637840, 851120, 440, 455), 0, 0, 255),
+			JSON.stringify(pointColorAt(637840, 851120, 440, 455)));
+
+		// ---- ラベルのリネーム ----
+		$('#pcs_sima_list .pcs-row-rename').click();
+		const rInput = $('#pcs_sima_list input[type="text"]');
+		check('C25 名前ボタン → 入力欄に切替', rInput.length === 1);
+		rInput.val('港区10 境界').trigger(jQuery.Event('keydown', { key: 'Enter' }));
+		await sleep(100);
+		check('C26 リネーム反映', green.label === '港区10 境界' && $('#pcs_sima_list .pcs-row-label').text().includes('港区10 境界'),
+			green.label);
+
+		// ---- 色変更・リネーム後も完全復元できるか (= backup の元色が保持されている) ----
+		$('#pcs_sima_list .pcs-row-del').click();
+		check('C27 削除 → 色変更後でも元色 (灰 120) に完全復元', PT.simaEntries.length === 0 &&
+			isColor(pointColorAt(637840, 851120, 440, 455), 120, 120, 120),
+			JSON.stringify(pointColorAt(637840, 851120, 440, 455)));
+
 		log(`=== 完了: PASS ${pass} / FAIL ${fail} (全 ${pass + fail}) ===`);
 	} catch (err) {
 		log('HARNESS ERROR: ' + (err && err.stack || err));
