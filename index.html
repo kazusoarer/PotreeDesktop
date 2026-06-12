@@ -119,6 +119,9 @@
 	<script src="./libs/jstree/jstree.js"></script>
 	<script src="./libs/potree/potree.js"></script>
 	<script src="./libs/plasio/js/laslaz.js"></script>
+	<!-- pcs: 現場ツール (SIMA 境界線 / 一つ戻る・進む)。 three.min.js は Potree 内部と同じ r124 -->
+	<script src="./libs/three.js/build/three.min.js"></script>
+	<script src="./src/pcs-tools.js"></script>
 
 		<script>
 		let elSplatQuality = $("#converter_choice");
@@ -173,7 +176,10 @@
 			noDragAndDrop: true,
 		};
 		window.viewer = new Potree.Viewer(elRenderArea, viewerArgs);
-		
+
+		// pcs: データオープンは常にハイクオリティ (Splat Quality = High Quality)
+		viewer.useHQ = true;
+
 		viewer.setEDLEnabled(true);
 		viewer.setFOV(60);
 		viewer.setPointBudget(3*1000*1000);
@@ -189,6 +195,9 @@
 			$("#menu_scene").next().show();
 			$("#menu_filters").next().show();
 			viewer.toggleSidebar();
+
+			// pcs: 左パネルに「現場ツール」 section (SIMA 境界線 / 一つ戻る・進む)
+			if (window.initPcsTools) window.initPcsTools(viewer);
 
 
 			// let section = $(`
@@ -329,6 +338,15 @@
 			//console.log(e);
 			viewer.postError(e.error.message);
 		});
+
+		// pcs: 開発専用の自動テストフック (env PCS_TEST に script path を渡した時だけ動く)
+		try {
+			const testPath = (typeof process !== 'undefined') && process.env && process.env.PCS_TEST;
+			if (testPath) {
+				const code = require('fs').readFileSync(testPath, 'utf8');
+				setTimeout(() => { try { new Function(code)(); } catch (err) { console.error('[pcs-test]', err); } }, 1500);
+			}
+		} catch (_) {}
 
 		
 		
