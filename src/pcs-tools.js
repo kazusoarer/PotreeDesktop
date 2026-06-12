@@ -471,22 +471,21 @@
 				<div style="display:flex; align-items:center; gap:5px; padding:2px 0;">
 					<input type="color" class="pcs-row-color" value="${en.colorHex}"
 						style="width:26px; height:20px; padding:0; flex:none;" title="線色 (変更すると即反映)"/>
-					<span class="pcs-row-label" style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
-						title="${en.matched.toLocaleString()} 点を着色"></span>
+					<span class="pcs-row-label" style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:text;"
+						title="${en.matched.toLocaleString()} 点を着色 / ダブルクリックで名前を変更"></span>
 					<input type="number" class="pcs-row-width" value="${en.widthM}" min="0.05" step="0.05"
 						style="width:56px;" title="着色線幅 (m)。 変更すると即座に着色し直します"/>
 					<span>m</span>
-					<input type="button" class="pcs-row-rename" value="名前" style="width:auto;" title="表示名を変更"/>
 					<input type="button" class="pcs-row-del" value="削除" style="width:auto;"/>
 				</div>
 			`);
 			row.find('.pcs-row-label').text(en.label + (en.active ? '' : ' (非表示)'));
 			row.find('.pcs-row-color').on('input change', function () { setEntryColor(en, this.value); });
 			row.find('.pcs-row-width').on('change', function () { setEntryWidth(en, parseFloat(this.value)); });
-			row.find('.pcs-row-rename').click(() => {
-				const span = row.find('.pcs-row-label');
+			// ラベルをダブルクリック → その場で直接リネーム (Enter 確定 / Esc 取消)
+			row.find('.pcs-row-label').on('dblclick', function () {
 				const inp = $('<input type="text" style="flex:1; min-width:60px;">').val(en.label);
-				span.replaceWith(inp);
+				$(this).replaceWith(inp);
 				inp.focus().select();
 				let done = false;
 				const commit = () => { if (done) return; done = true; renameEntry(en, inp.val()); };

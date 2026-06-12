@@ -156,10 +156,10 @@
 		check('C24 緑 → 青へ即時変更', green.colorHex === '#0000ff' && isColor(pointColorAt(637840, 851120, 440, 455), 0, 0, 255),
 			JSON.stringify(pointColorAt(637840, 851120, 440, 455)));
 
-		// ---- ラベルのリネーム ----
-		$('#pcs_sima_list .pcs-row-rename').click();
+		// ---- ラベルのダブルクリック リネーム ----
+		$('#pcs_sima_list .pcs-row-label').trigger('dblclick');
 		const rInput = $('#pcs_sima_list input[type="text"]');
-		check('C25 名前ボタン → 入力欄に切替', rInput.length === 1);
+		check('C25 ラベル dblclick → 入力欄に切替', rInput.length === 1);
 		rInput.val('港区10 境界').trigger(jQuery.Event('keydown', { key: 'Enter' }));
 		await sleep(100);
 		check('C26 リネーム反映', green.label === '港区10 境界' && $('#pcs_sima_list .pcs-row-label').text().includes('港区10 境界'),
