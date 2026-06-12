@@ -210,8 +210,8 @@
 		}
 	}
 
-	// 元の色に戻す (= 一つ戻る / 削除)。 既に unload された node は再読込時に元色で戻るため対象外で OK。
-	function restoreEntry(entry) {
+	// 着色した点を元の色へ書き戻す (UI 状態は触らない)
+	function restoreColors(entry) {
 		for (const [geo, b] of entry.backups) {
 			const arr = b.attr.array;
 			const stride = b.attr.itemSize;
@@ -226,8 +226,28 @@
 		entry.backups = new Map();
 		entry.processed = new WeakSet();
 		entry.matched = 0;
+	}
+
+	// 元の色に戻す (= 一つ戻る / 削除)。 既に unload された node は再読込時に元色で戻るため対象外で OK。
+	function restoreEntry(entry) {
+		restoreColors(entry);
 		entry.active = false;
 		refreshSimaList();
+	}
+
+	// 読込後の線幅変更: 元色に戻してから新しい幅で即座に着色し直す
+	function setEntryWidth(entry, w) {
+		if (!isFinite(w) || w <= 0) { setStatus('線幅は 0 より大きい数値 (m) で指定してください', true); return; }
+		restoreColors(entry);
+		entry.widthM = w;
+		entry.halfW = w / 2;
+		entry.bbox = entryBBox(entry.segments, entry.halfW);
+		entry.grid = buildSegmentGrid(entry.segments, entry.halfW);
+		if (entry.active) {
+			ensureProcessTimer();
+			processEntries();
+		}
+		setStatus(`線幅 ${w} m で着色し直しました (${entry.matched.toLocaleString()} 点)`);
 	}
 
 	function activateEntry(entry) {
@@ -426,14 +446,18 @@
 		el.empty();
 		for (const en of SIMA_ENTRIES) {
 			const row = $(`
-				<div style="display:flex; align-items:center; gap:6px; padding:2px 0;">
+				<div style="display:flex; align-items:center; gap:5px; padding:2px 0;">
 					<span style="display:inline-block; width:12px; height:12px; background:${en.colorHex}; border:1px solid #888; flex:none;"></span>
 					<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
-						title="線幅 ${en.widthM} m / ${en.matched.toLocaleString()} 点">${en.label}${en.active ? '' : ' (非表示)'}</span>
+						title="${en.matched.toLocaleString()} 点を着色">${en.label}${en.active ? '' : ' (非表示)'}</span>
+					<input type="number" class="pcs-row-width" value="${en.widthM}" min="0.05" step="0.05"
+						style="width:56px;" title="着色線幅 (m)。 変更すると即座に着色し直します"/>
+					<span>m</span>
 					<input type="button" value="削除" style="width:auto;"/>
 				</div>
 			`);
-			row.find('input').click(() => { deleteEntry(en); setStatus('着色を解除しました'); });
+			row.find('.pcs-row-width').on('change', function () { setEntryWidth(en, parseFloat(this.value)); });
+			row.find('input[type="button"]').click(() => { deleteEntry(en); setStatus('着色を解除しました'); });
 			el.append(row);
 		}
 	}
@@ -489,7 +513,7 @@
 	// 自動テスト・将来機能用の内部 handle
 	window.PCS_TOOLS = {
 		parseSima, importSimaText, importSimaFromPath,
-		undo, redo, processEntries,
+		undo, redo, processEntries, setEntryWidth,
 		get simaEntries() { return SIMA_ENTRIES; },
 		get undoCount() { return undoStack.length; },
 		get redoCount() { return redoStack.length; },

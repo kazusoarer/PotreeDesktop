@@ -133,6 +133,21 @@
 		await sleep(100);
 		check('C18 Ctrl+Y ×2 → 両方復活', V.scene.measurements.length === 1 && isColor(pointColorAt(637840, 851120, 440, 455), 0, 204, 0));
 
+		// ---- 読込後の線幅変更 (一覧の幅入力欄) ----
+		const matchedNarrow = green.matched;
+		const wInput = $('#pcs_sima_list .pcs-row-width');
+		check('C19 一覧に線幅入力欄', wInput.length === 1 && parseFloat(wInput.val()) === 0.1);
+		wInput.val('1.2').trigger('change');
+		await sleep(100);
+		check('C20 幅 0.1→1.2 で着色点数が増える (再着色)', green.widthM === 1.2 && green.matched > matchedNarrow * 1.5,
+			`narrow=${matchedNarrow} wide=${green.matched}`);
+		check('C21 広げた幅でも色は緑のまま', isColor(pointColorAt(637840, 851120.5, 440, 455), 0, 204, 0),
+			JSON.stringify(pointColorAt(637840, 851120.5, 440, 455)));
+		$('#pcs_sima_list .pcs-row-width').val('0.1').trigger('change');
+		await sleep(100);
+		check('C22 幅を戻すと隣接列は元色に復元', green.widthM === 0.1 && isColor(pointColorAt(637840, 851120.5, 440, 455), 120, 120, 120),
+			JSON.stringify(pointColorAt(637840, 851120.5, 440, 455)));
+
 		log(`=== 完了: PASS ${pass} / FAIL ${fail} (全 ${pass + fail}) ===`);
 	} catch (err) {
 		log('HARNESS ERROR: ' + (err && err.stack || err));
