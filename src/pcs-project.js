@@ -42,36 +42,14 @@
 	// ------------------------------------------------------------
 	// 親フォルダ
 	// ------------------------------------------------------------
+	// 保存先は黙って「ドキュメント\Potree現場管理」を使う (= 起動時に質問しない)
 	function resolveParent() {
 		if (process.env.PCS_SITE_PARENT) return process.env.PCS_SITE_PARENT;   // テスト用
 		const saved = localStorage.getItem(PARENT_KEY);
 		if (saved) return saved;
 		const def = path.join(os.homedir(), 'Documents', 'Potree現場管理');
-		const ok = window.confirm(`現場の保存先を次の場所にします。\n\n${def}\n\n別の場所にする場合は「キャンセル」を押してフォルダを選んでください。`);
-		if (ok) {
-			localStorage.setItem(PARENT_KEY, def);
-			return def;
-		}
-		// フォルダ選択 (キャンセルされたら既定に戻す)
-		return def;   // picker は selectParentFolder() で上書き (初回 confirm キャンセル時のみ呼ぶ)
-	}
-
-	function selectParentFolder(thenDefault) {
-		const inp = document.createElement('input');
-		inp.type = 'file';
-		inp.webkitdirectory = true;
-		inp.addEventListener('change', () => {
-			const f = inp.files && inp.files[0];
-			if (f && f.path) {
-				PARENT = path.dirname(f.path) === f.path ? f.path : f.path.replace(/[\\\/][^\\\/]*$/, '');
-				PARENT = inp.files[0].path.split(path.sep).slice(0, -1).join(path.sep);
-			}
-			if (!PARENT) PARENT = thenDefault;
-			localStorage.setItem(PARENT_KEY, PARENT);
-			ensureDir(PARENT);
-			refreshList();
-		});
-		inp.click();
+		localStorage.setItem(PARENT_KEY, def);
+		return def;
 	}
 
 	function ensureDir(p) {
@@ -346,33 +324,32 @@
 		updateHeader();
 	}
 
+	let listExpanded = false;
+	const LIST_LIMIT = 5;   // 通常は直近 5 件のみ表示
+
 	function refreshList() {
 		const el = $('#pcs_site_list');
 		if (!el.length) return;
 		const q = ($('#pcs_site_search').val() || '').toLowerCase();
 		el.empty();
-		for (const s of scanSites()) {
-			if (q && !s.displayName.toLowerCase().includes(q)) continue;
+		const all = scanSites().filter(s => !q || s.displayName.toLowerCase().includes(q));
+		// 検索中は全件、 通常は直近 5 件 (+ 展開で全件)
+		const shown = (q || listExpanded) ? all : all.slice(0, LIST_LIMIT);
+		for (const s of shown) {
+			const isCurrent = SITE && SITE.file === s.file;
 			const row = $(`
-				<div class="pcs-site-row" style="display:flex; align-items:center; gap:6px; padding:3px 0; cursor:pointer;">
+				<div class="pcs-site-row" style="display:flex; align-items:center; gap:6px; padding:3px 0;">
+					<span class="pcs-site-open" style="flex:none; cursor:pointer; font-size:115%;" title="この現場を開く">📂</span>
 					<span class="pcs-site-nm" style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
 					<span style="color:#999; font-size:85%; flex:none;">${fmtDate(s.updatedAt)}</span>
 					<input type="button" value="削除" style="width:auto;"/>
 				</div>
 			`);
 			const nm = row.find('.pcs-site-nm');
-			nm.text(s.displayName + (SITE && SITE.file === s.file ? ' (作業中)' : ''));
-			nm.attr('title', s.dir + '\nクリックで開く / ダブルクリックで名前を変更');
-			let clickTimer = null;
-			nm.on('click', () => {
-				if (clickTimer) return;
-				clickTimer = setTimeout(() => {
-					clickTimer = null;
-					if (!(SITE && SITE.file === s.file)) openSiteFile(s.file);
-				}, 300);
-			});
+			nm.text(s.displayName + (isCurrent ? ' (作業中)' : ''));
+			nm.attr('title', s.dir + '\nダブルクリックで名前を変更');
+			row.find('.pcs-site-open').click(() => { if (!isCurrent) openSiteFile(s.file); });
 			nm.on('dblclick', function () {
-				if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
 				const inp = $('<input type="text" style="flex:1; min-width:60px;">').val(s.displayName);
 				$(this).replaceWith(inp);
 				inp.focus().select();
@@ -386,6 +363,13 @@
 			});
 			row.find('input[type="button"]').click((ev) => { ev.stopPropagation(); deleteSite(s); });
 			el.append(row);
+		}
+		// 6 件以上は展開式
+		if (!q && all.length > LIST_LIMIT) {
+			const more = $(`<div id="pcs_site_more" style="padding:4px 0; cursor:pointer; color:#9adcff; text-align:center;"></div>`);
+			more.text(listExpanded ? '▲ 折りたたむ' : `▼ さらに表示 (残り ${all.length - LIST_LIMIT} 件)`);
+			more.click(() => { listExpanded = !listExpanded; refreshList(); });
+			el.append(more);
 		}
 	}
 

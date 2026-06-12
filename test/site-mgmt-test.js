@@ -138,6 +138,27 @@
 			const sites = PJ.scanSites();
 			check('S24 現場一覧は維持 (1 件・名前一致)', sites.length === 1 && sites[0].displayName === '佐藤2丁目 境界確認',
 				JSON.stringify(sites.map(s => s.displayName)));
+
+			// 一覧 UI: 開くアイコン / 直近 5 件制限 / 展開
+			$('#pcs_site_search').val('').trigger('input');
+			check('S25 一覧行に開くアイコン (📂)', $('#pcs_site_list .pcs-site-open').length >= 1);
+			for (let i = 1; i <= 6; i++) {
+				const d = path.join(PARENT, 'site_dummy_' + i);
+				fs.mkdirSync(path.join(d, 'data'), { recursive: true });
+				fs.writeFileSync(path.join(d, '現場.json5'), JSON.stringify({
+					pcsProject: 1, displayName: 'ダミー現場' + i,
+					createdAt: '2026-01-01T00:00:00Z', updatedAt: `2026-01-0${i}T00:00:00Z`,
+				}), 'utf8');
+			}
+			$('#pcs_site_search').val('').trigger('input');
+			check('S26 直近 5 件のみ + さらに表示', $('#pcs_site_list .pcs-site-row').length === 5 && $('#pcs_site_more').length === 1,
+				`rows=${$('#pcs_site_list .pcs-site-row').length}`);
+			$('#pcs_site_more').click();
+			check('S27 展開で全 7 件', $('#pcs_site_list .pcs-site-row').length === 7, `rows=${$('#pcs_site_list .pcs-site-row').length}`);
+			$('#pcs_site_more').click();
+			check('S28 折りたたみで 5 件に戻る', $('#pcs_site_list .pcs-site-row').length === 5);
+			$('#pcs_site_search').val('ダミー現場3').trigger('input');
+			check('S29 検索は 5 件制限を超えて全件対象', $('#pcs_site_list .pcs-site-row').length === 1);
 			await finishAll();
 			return;
 		}
