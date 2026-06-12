@@ -11,7 +11,9 @@
 
 	let V = null;
 	const SIMA_GROUPS = [];          // 読込済み SIMA の THREE.Group
-	const Z_OFFSET = 0.05;           // 点群と同じ高さだと埋まるため僅かに浮かせる
+	const Z_OFFSET = 0.3;            // 表面ぴったりだと埋もれるため僅かに浮かせる (m)
+	const SAMPLE_CELL = 1.0;         // 高さサンプリングのグリッド (m)
+	const SEARCH_RING_MAX = 8;       // 高さが見つからない時に何 m 四方まで探すか
 
 	// ------------------------------------------------------------
 	// SIMA 共通フォーマット解析
@@ -74,13 +76,129 @@
 		} catch (_) { return 0; }
 	}
 
+	// ------------------------------------------------------------
+	// 点群表面への高さフィット (= ドレープ)
+	//   SIMA の標高は 0 や別基準のことが多く、 そのまま使うと線が宙に浮く / 沈む。
+	//   → 読込済みの点群から境界線位置の地表高さを拾い、 線を表面に沿わせる。
+	//   読込済み octree node (THREE.Points) を走査して SIMA 範囲の点を 1m グリッドに集計。
+	// ------------------------------------------------------------
+	function buildHeightSampler(parsed) {
+		let minE = Infinity, maxE = -Infinity, minN = Infinity, maxN = -Infinity;
+		for (const p of parsed.points.values()) {
+			if (p.e < minE) minE = p.e; if (p.e > maxE) maxE = p.e;
+			if (p.n < minN) minN = p.n; if (p.n > maxN) maxN = p.n;
+		}
+		const M = SEARCH_RING_MAX + 20;   // 余白
+		minE -= M; maxE += M; minN -= M; maxN += M;
+
+		const cells = new Map();          // "ix_iy" -> z の配列
+		const v = new THREE.Vector3();
+		for (const pc of V.scene.pointclouds) {
+			pc.updateMatrixWorld(true);
+			pc.traverse((obj) => {
+				if (!obj.isPoints || !obj.geometry) return;
+				const ga = obj.geometry.getAttribute('position');
+				if (!ga) return;
+				if (obj.geometry.boundingBox) {
+					const bb = obj.geometry.boundingBox.clone().applyMatrix4(obj.matrixWorld);
+					if (bb.max.x < minE || bb.min.x > maxE || bb.max.y < minN || bb.min.y > maxN) return;
+				}
+				for (let i = 0; i < ga.count; i++) {
+					v.fromBufferAttribute(ga, i).applyMatrix4(obj.matrixWorld);
+					if (v.x < minE || v.x > maxE || v.y < minN || v.y > maxN) continue;
+					const key = Math.floor(v.x / SAMPLE_CELL) + '_' + Math.floor(v.y / SAMPLE_CELL);
+					let arr = cells.get(key);
+					if (!arr) { arr = []; cells.set(key, arr); }
+					arr.push(v.z);
+				}
+			});
+		}
+		return cells;
+	}
+
+	// その場所の表面高さ。 セルが空なら周囲のリングを SEARCH_RING_MAX m まで拡げて探す。
+	// 下位 25% 値を使う (= 電線・樹木より地表寄り、 かつ外れ値ノイズに揺られない)。
+	function heightAt(cells, e, n) {
+		const ie = Math.floor(e / SAMPLE_CELL), inn = Math.floor(n / SAMPLE_CELL);
+		for (let r = 0; r <= SEARCH_RING_MAX; r++) {
+			const zs = [];
+			for (let dx = -r; dx <= r; dx++) {
+				for (let dy = -r; dy <= r; dy++) {
+					if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+					const arr = cells.get((ie + dx) + '_' + (inn + dy));
+					if (arr) for (const z of arr) zs.push(z);
+				}
+			}
+			if (zs.length) {
+				zs.sort((a, b) => a - b);
+				return zs[Math.floor(zs.length * 0.25)];
+			}
+		}
+		return null;
+	}
+
+	// 辺を細分化 (= 直線の途中も地形に沿うように)
+	function densifyRing(pts, step) {
+		const out = [];
+		for (let i = 0; i < pts.length; i++) {
+			const a = pts[i], b = pts[(i + 1) % pts.length];
+			const len = Math.hypot(b.e - a.e, b.n - a.n);
+			const nSeg = Math.max(1, Math.ceil(len / step));
+			for (let k = 0; k < nSeg; k++) {
+				const t = k / nSeg;
+				out.push({ e: a.e + (b.e - a.e) * t, n: a.n + (b.n - a.n) * t });
+			}
+		}
+		return out;
+	}
+
+	// 画地 1 つ分の赤線を生成 (drape = 高さグリッド。 null なら SIMA 標高 / 固定高さ)
+	function buildParcelLine(pts, cells, refZ, anchor) {
+		const perimeter = pts.reduce((s, p, i) => {
+			const q = pts[(i + 1) % pts.length];
+			return s + Math.hypot(q.e - p.e, q.n - p.n);
+		}, 0);
+		const step = Math.min(5, Math.max(0.5, perimeter / 400));
+		const ring = densifyRing(pts, step);
+
+		// 1st pass: 表面高さ
+		let sampledSum = 0, sampledN = 0;
+		const zs = ring.map(p => {
+			const z = cells ? heightAt(cells, p.e, p.n) : null;
+			if (z != null) { sampledSum += z; sampledN++; }
+			return z;
+		});
+		const parcelAvg = sampledN > 0 ? sampledSum / sampledN : null;
+		// 2nd pass: 欠測は画地平均 → SIMA 標高 → 全体 fallback
+		const simaZ = (i) => {
+			const src = pts[0].z;   // 画地内は概ね同水準とみなす
+			return src != null ? src : refZ;
+		};
+		const finalZ = zs.map((z, i) => (z != null ? z : (parcelAvg != null ? parcelAvg : simaZ(i))));
+
+		const pos = new Float32Array(ring.length * 3);
+		ring.forEach((p, i) => {
+			pos[i * 3]     = p.e - anchor.x;
+			pos[i * 3 + 1] = p.n - anchor.y;
+			pos[i * 3 + 2] = finalZ[i] + Z_OFFSET - anchor.z;
+		});
+		const geo = new THREE.BufferGeometry();
+		geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+		const mat = new THREE.LineBasicMaterial({ color: 0xff0000, depthTest: false, depthWrite: false, transparent: true });
+		const line = new THREE.LineLoop(geo, mat);
+		line.renderOrder = 99990;   // 点群より常に手前 (= 境界が埋もれない)
+		return { line, fitted: sampledN > 0 };
+	}
+
 	// 赤線描画。 大座標 (数十万 m) を Float32 に直接入れると cm 単位で歪むため、
 	// 1 点目を anchor にして相対座標で geometry を作り、 group.position で戻す。
 	function drawSima(parsed, label) {
 		const group = new THREE.Group();
 		group.name = 'SIMA: ' + label;
+		group.userData.pcsParsed = parsed;   // 再フィット用に保持
 		const refZ = fallbackZ(parsed.points);
-		let drawn = 0, skipped = 0;
+		const cells = V.scene.pointclouds.length > 0 ? buildHeightSampler(parsed) : null;
+		let drawn = 0, skipped = 0, fittedCount = 0;
 		let anchor = null;
 		for (const parcel of parsed.parcels) {
 			const pts = resolveParcelPoints(parcel, parsed.points);
@@ -89,24 +207,42 @@
 				anchor = { x: pts[0].e, y: pts[0].n, z: (pts[0].z != null ? pts[0].z : refZ) };
 				group.position.set(anchor.x, anchor.y, anchor.z);
 			}
-			const pos = new Float32Array(pts.length * 3);
-			pts.forEach((p, i) => {
-				pos[i * 3]     = p.e - anchor.x;
-				pos[i * 3 + 1] = p.n - anchor.y;
-				pos[i * 3 + 2] = (p.z != null ? p.z : refZ) + Z_OFFSET - anchor.z;
-			});
-			const geo = new THREE.BufferGeometry();
-			geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-			const mat = new THREE.LineBasicMaterial({ color: 0xff0000, depthTest: false, depthWrite: false, transparent: true });
-			const line = new THREE.LineLoop(geo, mat);
-			line.renderOrder = 99990;   // 点群より常に手前 (= 境界が埋もれない)
-			group.add(line);
+			const r = buildParcelLine(pts, cells, refZ, anchor);
+			if (r.fitted) fittedCount++;
+			group.add(r.line);
 			drawn++;
 		}
-		if (drawn === 0) return { group: null, drawn, skipped };
+		if (drawn === 0) return { group: null, drawn, skipped, fittedCount };
 		V.scene.scene.add(group);
 		SIMA_GROUPS.push(group);
-		return { group, drawn, skipped };
+		return { group, drawn, skipped, fittedCount };
+	}
+
+	// 再フィット (= 点群の詳細 LOD が読み込まれた後に高さを取り直す)
+	function refitSimaGroup(group) {
+		const parsed = group.userData.pcsParsed;
+		if (!parsed) return;
+		const refZ = fallbackZ(parsed.points);
+		const cells = V.scene.pointclouds.length > 0 ? buildHeightSampler(parsed) : null;
+		const anchor = { x: group.position.x, y: group.position.y, z: group.position.z };
+		while (group.children.length) {
+			const c = group.children[0];
+			group.remove(c);
+			if (c.geometry) c.geometry.dispose();
+			if (c.material) c.material.dispose();
+		}
+		let fittedCount = 0, drawn = 0;
+		for (const parcel of parsed.parcels) {
+			const pts = resolveParcelPoints(parcel, parsed.points);
+			if (pts.length < 3) continue;
+			const r = buildParcelLine(pts, cells, refZ, anchor);
+			if (r.fitted) fittedCount++;
+			group.add(r.line);
+			drawn++;
+		}
+		setStatus(fittedCount > 0
+			? `高さを点群表面にフィットし直しました (${fittedCount}/${drawn} 画地)`
+			: '点群から高さを取得できませんでした (点群を読み込んでから再フィットしてください)', fittedCount === 0);
 	}
 
 	// Shift_JIS (測量ソフトの標準) → 駄目なら UTF-8。 文字化け数で良い方を採用。
@@ -135,7 +271,10 @@
 		}
 		recordAction({ type: 'sima', obj: r.group });
 		refreshSimaList();
-		setStatus(`境界線を表示: ${r.drawn} 画地 (赤線)${r.skipped ? ` / ${r.skipped} 画地は点不足でスキップ` : ''}`);
+		const fitMsg = r.fittedCount > 0
+			? `点群表面にフィット (${r.fittedCount}/${r.drawn} 画地)`
+			: '点群の高さを取得できず SIMA 標高で表示 (点群読込後に「再フィット」を押してください)';
+		setStatus(`境界線を表示: ${r.drawn} 画地 / ${fitMsg}${r.skipped ? ` / ${r.skipped} 画地は点不足でスキップ` : ''}`, r.fittedCount === 0);
 		return r.group;
 	}
 
@@ -279,10 +418,13 @@
 				<div style="display:flex; align-items:center; gap:6px; padding:2px 0;">
 					<span style="color:#ff5252;">━</span>
 					<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${g.name.replace('SIMA: ', '')}</span>
+					<input type="button" value="再フィット" style="width:auto;" title="点群の表面高さに合わせ直す"/>
 					<input type="button" value="削除" style="width:auto;"/>
 				</div>
 			`);
-			row.find('input').click(() => { removeSimaGroup(g); purge(g); setStatus('境界線を削除しました'); });
+			const btns = row.find('input');
+			$(btns[0]).click(() => refitSimaGroup(g));
+			$(btns[1]).click(() => { removeSimaGroup(g); purge(g); setStatus('境界線を削除しました'); });
 			el.append(row);
 		}
 	}
@@ -331,7 +473,7 @@
 	// 自動テスト・将来機能用の内部 handle
 	window.PCS_TOOLS = {
 		parseSima, importSimaText, importSimaFromPath,
-		undo, redo,
+		undo, redo, refitSimaGroup, heightAt, buildHeightSampler,
 		get simaGroups() { return SIMA_GROUPS; },
 		get undoCount() { return undoStack.length; },
 		get redoCount() { return redoStack.length; },
