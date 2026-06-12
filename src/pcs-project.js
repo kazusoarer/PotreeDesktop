@@ -400,9 +400,9 @@
 				<div id="pcs_site_name" style="font-weight:bold; padding:2px 0 6px; font-size:105%;"
 					title="ダブルクリックで名前を変更"></div>
 				<span style="display:flex; gap:6px;">
-					<input id="pcs_site_save" type="button" value="保存" style="flex:1;"/>
-					<input id="pcs_site_new" type="button" value="新しい現場" style="flex:1;"/>
-					<input id="pcs_site_openfile" type="button" value="ファイルから開く" style="flex:1;"/>
+					<input id="pcs_site_save" type="button" value="保存" style="flex:1;" title="現在の現場を上書き保存"/>
+					<input id="pcs_site_new" type="button" value="新規" style="flex:1;" title="新しい現場を始める"/>
+					<input id="pcs_site_openfile" type="button" value="開く" style="flex:1;" title="現場ファイルを選んで開く"/>
 				</span>
 				<div class="divider"><span>現場一覧</span></div>
 				<input id="pcs_site_search" type="text" placeholder="現場名で検索…" style="width:100%; box-sizing:border-box;"/>

@@ -520,12 +520,12 @@
 					<span style="margin-left:8px;">線色</span>
 					<input id="pcs_sima_color" type="color" value="#ff0000" style="width:42px; height:24px; padding:0;"/>
 				</div>
-				<input id="pcs_sima_import" type="button" value="SIMA 読込 (境界の点を着色)" style="width:100%;"/>
+				<input id="pcs_sima_import" type="button" value="SIMA 読込" style="width:100%;" title="境界線の位置の点群を着色します"/>
 				<div id="pcs_sima_list"></div>
 				<div class="divider"><span>編集履歴</span></div>
 				<span style="display:flex; gap:6px;">
-					<input id="pcs_undo" type="button" value="← 一つ戻る" style="flex:1;" title="Ctrl+Z"/>
-					<input id="pcs_redo" type="button" value="一つ進む →" style="flex:1;" title="Ctrl+Y"/>
+					<input id="pcs_undo" type="button" value="← 戻る" style="flex:1;" title="一つ戻る (Ctrl+Z)"/>
+					<input id="pcs_redo" type="button" value="進む →" style="flex:1;" title="一つ進む (Ctrl+Y)"/>
 				</span>
 				<div id="pcs_tools_status" style="padding:4px 0; min-height:1.3em; font-size:90%;"></div>
 			</div>
