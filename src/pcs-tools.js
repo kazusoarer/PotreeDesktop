@@ -557,10 +557,12 @@
 	];
 	let stickyActive = null;    // { tool, el }
 	let stickyMeasure = null;   // 進行中の計測 object
+	let stickyClicks = 0;       // 今回の挿入で確定した左クリック数
 
 	function stickyStart() {
 		if (!stickyActive) return;
 		const t = stickyActive.tool;
+		stickyClicks = 0;
 		$('#menu_measurements').next().slideDown();
 		stickyMeasure = (t.kind === 'profile')
 			? V.profileTool.startInsertion()
@@ -571,6 +573,7 @@
 		if (stickyActive) stickyActive.el.removeClass('pcs-sticky-on');
 		stickyActive = null;
 		stickyMeasure = null;
+		stickyClicks = 0;
 		if (cancelInsertion) V.dispatchEvent({ type: 'cancel_insertions' });
 	}
 
@@ -612,18 +615,29 @@
 			$(e).on('click', () => stickyStop(false));
 		});
 
-		// 挿入終了の検知 → まだ ON なら次の計測を自動開始
+		// 挿入終了の検知 → まだ ON なら次の計測を自動開始。
+		// 注意: Potree 内部では「浮いている未確定の点」も points に含まれるため、 点数での判定は
+		// 最後の 1 点を置く前に誤発火する (= 高さ計測 2 点目が壊れる)。 確定左クリックの回数が
+		// 規定点数 (maxMarkers) に達した時のみ完了とみなす。
 		V.renderer.domElement.addEventListener('mouseup', (e) => {
 			if (!stickyActive) return;
 			const m = stickyMeasure;
 			const kind = stickyActive.tool.kind;
+			const mm = (kind === 'measure' && m && isFinite(m.maxMarkers)) ? m.maxMarkers : Infinity;
+			if (e.button === 0) stickyClicks++;
+			const clicks = stickyClicks;
 			setTimeout(() => {
-				if (!stickyActive) return;
-				if (e.button === 2) {                       // 右クリック = 現在の計測を確定して次へ
-					cleanupEmpty(m, kind);
+				if (!stickyActive || stickyMeasure !== m) return;
+				if (e.button === 2) {
+					// 右クリック = 確定して次へ。 規定点数前の作りかけ (未確定点入り) は破棄
+					if (isFinite(mm) && clicks < mm && m && m.points && m.points.length > 0) {
+						try { V.scene.removeMeasurement(m); } catch (_) {}
+					} else {
+						cleanupEmpty(m, kind);
+					}
 					stickyStart();
-				} else if (e.button === 0 && m && m.points && m.maxMarkers && m.points.length >= m.maxMarkers) {
-					stickyStart();                            // 規定点数に到達 = 完了して次へ
+				} else if (e.button === 0 && isFinite(mm) && clicks >= mm) {
+					stickyStart();   // 規定点数ぶん確定 = 完了して次へ
 				}
 			}, 50);
 		});
