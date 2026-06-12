@@ -80,13 +80,24 @@
 			createdAt: SITE.createdAt,
 			updatedAt: new Date().toISOString(),
 			potree: potreeData,
-			pcs: { sima: collectSima() },
+			pcs: { sima: collectSima(), measureExtras: collectMeasureExtras() },
 		};
 		const text = JSON.stringify(data, null, '\t');
 		const tmp = SITE.file + '.tmp';
 		fs.writeFileSync(tmp, text, 'utf8');
 		try { if (fs.existsSync(SITE.file)) fs.copyFileSync(SITE.file, SITE.file + '.bak'); } catch (_) {}
 		fs.renameSync(tmp, SITE.file);
+	}
+
+	// Distance 頂点ごとの点名 (pcsPointNames) — Potree.saveProject は保存しないため pcs 側で保持
+	function collectMeasureExtras() {
+		const out = [];
+		for (const m of V.scene.measurements) {
+			if (m.pcsPointNames && m.pcsPointNames.some(n => n)) {
+				out.push({ uuid: m.uuid, pointNames: m.pcsPointNames });
+			}
+		}
+		return out;
 	}
 
 	function collectSima() {
@@ -212,6 +223,12 @@
 				const { data: pd, missing } = absolutizeUrls(data.potree, siteDir);
 				if (missing.length) setWarn(`点群データが見つかりません (${missing.length} 件)。 現場フォルダごと移動したか確認してください`);
 				try { await Potree.loadProject(V, pd); } catch (e) { setWarn('復元に失敗: ' + e.message); }
+			}
+			// 頂点点名の復元 (uuid は loadProject で維持される)
+			const extras = (data.pcs && data.pcs.measureExtras) || [];
+			for (const ex of extras) {
+				const m = V.scene.measurements.find(x => x.uuid === ex.uuid);
+				if (m) m.pcsPointNames = ex.pointNames;
 			}
 			const sima = (data.pcs && data.pcs.sima) || [];
 			for (const s of sima) {

@@ -127,6 +127,76 @@
 				L2.filter(s => /境界杭5|既設水路/.test(s)).slice(0, 4).join(' | '));
 		}
 
+		// ---- ツリーラベル dblclick リネーム ----
+		{
+			const pm = V.scene.measurements.find(m => m.showCoordinates);
+			const tree = $('#jstree_scene').jstree(true);
+			const node = tree.get_json('measurements').children.find(c => c.data && c.data.uuid === pm.uuid);
+			$('#' + node.id + '_anchor').trigger('dblclick');
+			const inp = $('#' + node.id + '_anchor input');
+			check('E19 ツリー dblclick → 入力欄', inp.length === 1 && inp.val() === pm.name);
+			inp.val('杭A').trigger(jQuery.Event('keydown', { key: 'Enter' }));
+			await sleep(100);
+			check('E20 dblclick リネーム反映 (名前 + ツリー)', pm.name === '杭A' && tree.get_node(node.id).text.includes('杭A'));
+		}
+
+		// ---- Distance 頂点ごとの点名 (Properties) → SIMA 反映 ----
+		{
+			const dm = V.scene.measurements.find(m => m.showDistances && !m.closed && m.points.length === 3);
+			const tree = $('#jstree_scene').jstree(true);
+			const node = tree.get_json('measurements').children.find(c => c.data && c.data.uuid === dm.uuid);
+			tree.deselect_all();
+			tree.select_node(node.id);
+			await sleep(400);
+			const vIn = $('.pcs-vertex-name');
+			check('E21 頂点点名欄が頂点数ぶん表示', vIn.length === 3, String(vIn.length));
+			$(vIn[0]).val('NO.1').trigger('change');
+			$(vIn[1]).val('NO.2').trigger('change');
+			await sleep(100);
+			const r3 = PT.buildSimaText('テスト現場');
+			const L3 = r3.text.split('\r\n');
+			check('E22 頂点点名が SIMA 反映 (個別 > 線名-連番 > 自動)',
+				L3.some(s => /^A01,3,NO\.1,/.test(s)) && L3.some(s => /^A01,4,NO\.2,/.test(s)) &&
+				L3.some(s => /^A01,5,既設水路-3,/.test(s)) && L3.some(s => /^B01,3,NO\.1,$/.test(s)),
+				L3.filter(s => /NO\.|既設水路-3/.test(s)).join(' | '));
+		}
+
+		// ---- 右クリック削除 (単独 / 複数) + 戻るで復元 ----
+		{
+			const tree = $('#jstree_scene').jstree(true);
+			const pm = V.scene.measurements.find(m => m.showCoordinates);
+			const n0 = V.scene.measurements.length;
+			const node = tree.get_json('measurements').children.find(c => c.data && c.data.uuid === pm.uuid);
+			$('#' + node.id + '_anchor').trigger(jQuery.Event('contextmenu', { clientX: 200, clientY: 200 }));
+			check('E23 右クリックで削除メニュー', $('#pcs_tree_menu').is(':visible') && $('#pcs_tree_del').text() === '削除');
+			$('#pcs_tree_del').click();
+			await sleep(100);
+			check('E24 削除実行', V.scene.measurements.length === n0 - 1 && !V.scene.measurements.includes(pm));
+			$('#pcs_undo').click();
+			await sleep(100);
+			check('E25 戻るで削除を復元', V.scene.measurements.includes(pm));
+
+			// 複数選択削除 → 1 回の戻るで一括復元
+			const root = tree.get_json('measurements');
+			const ids = root.children.slice(0, 2).map(c => c.id);
+			const objs = root.children.slice(0, 2).map(c => V.scene.measurements.find(m => m.uuid === c.data.uuid));
+			tree.deselect_all();
+			tree.select_node(ids[0]);
+			tree.select_node(ids[1]);
+			$('#' + ids[0] + '_anchor').trigger(jQuery.Event('contextmenu', { clientX: 200, clientY: 200 }));
+			check('E26 複数選択 → 「削除 (2 件)」', $('#pcs_tree_del').text() === '削除 (2 件)', $('#pcs_tree_del').text());
+			const n1 = V.scene.measurements.length;
+			$('#pcs_tree_del').click();
+			await sleep(100);
+			check('E27 2 件まとめて削除', V.scene.measurements.length === n1 - 2);
+			$('#pcs_undo').click();
+			await sleep(100);
+			check('E28 戻る 1 回で 2 件とも復元', objs.every(o => V.scene.measurements.includes(o)));
+			window.dispatchEvent(new KeyboardEvent('keydown', { key: 'y', ctrlKey: true }));
+			await sleep(100);
+			check('E29 進むで再削除', V.scene.measurements.length === n1 - 2);
+		}
+
 		// 後始末
 		for (const m of [...V.scene.measurements]) V.scene.removeMeasurement(m);
 

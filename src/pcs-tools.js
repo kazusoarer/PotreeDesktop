@@ -406,6 +406,14 @@
 			else if (a.type === 'profile') V.scene.removeProfile(a.obj);
 			else if (a.type === 'volume') V.scene.removeVolume(a.obj);
 			else if (a.type === 'sima') restoreEntry(a.obj);
+			else if (a.type === 'delete') {
+				// 削除の取り消し = まとめて復元
+				for (const it of a.items) {
+					if (it.kind === 'measurement') V.scene.addMeasurement(it.obj);
+					else if (it.kind === 'profile') V.scene.addProfile(it.obj);
+					else if (it.kind === 'volume') V.scene.addVolume(it.obj);
+				}
+			}
 		} finally { internalOp = false; }
 		redoStack.push(a);
 		updateHistoryButtons();
@@ -420,13 +428,20 @@
 			else if (a.type === 'profile') V.scene.addProfile(a.obj);
 			else if (a.type === 'volume') V.scene.addVolume(a.obj);
 			else if (a.type === 'sima') activateEntry(a.obj);
+			else if (a.type === 'delete') {
+				for (const it of a.items) {
+					if (it.kind === 'measurement') V.scene.removeMeasurement(it.obj);
+					else if (it.kind === 'profile') V.scene.removeProfile(it.obj);
+					else if (it.kind === 'volume') V.scene.removeVolume(it.obj);
+				}
+			}
 		} finally { internalOp = false; }
 		undoStack.push(a);
 		updateHistoryButtons();
 	}
 
 	function labelOf(a) {
-		return { measurement: '計測', profile: '断面', volume: '体積', sima: 'SIMA 着色' }[a.type] || a.type;
+		return { measurement: '計測', profile: '断面', volume: '体積', sima: 'SIMA 着色', delete: '削除' }[a.type] || a.type;
 	}
 
 	function hookSceneEvents() {
@@ -620,7 +635,11 @@
 		for (const m of distMeasures) {
 			const lineName = (m.name && m.name !== 'Distance') ? m.name : `結線${parcels.length + 1}`;
 			const named = (m.name && m.name !== 'Distance');
-			const refs = m.points.map((pt, j) => a01(pt.position, named ? `${lineName}-${j + 1}` : null));
+			const refs = m.points.map((pt, j) => {
+				// 頂点ごとの点名 (Properties で個別指定) > 線名-連番 > 自動付番
+				const custom = (m.pcsPointNames && m.pcsPointNames[j]) ? m.pcsPointNames[j] : null;
+				return a01(pt.position, custom || (named ? `${lineName}-${j + 1}` : null));
+			});
 			parcels.push({ name: lineName, refs });
 		}
 		lines.push('A99,');
@@ -662,10 +681,100 @@
 	}
 
 	// ------------------------------------------------------------
-	// 計測のリネーム (Properties パネルに「名前」欄を追加)
-	//   シーンツリーで計測 (Point/Distance 等) や断面を選択すると、 プロパティ最上部に
-	//   名前の編集欄を差し込む。 変更は SIMA 出力の点名・区画名に反映される。
+	// Objects ツリー連携 (リネーム / 削除 / 頂点点名)
+	//   - ラベルのダブルクリックでリネーム (計測 / 断面 / 体積)
+	//   - 右クリック → 削除 (複数選択に対応。 Ctrl+クリックで複数選択)
+	//   - Distance はプロパティに頂点ごとの「点名」欄 (SIMA 出力に反映)
 	// ------------------------------------------------------------
+	function findTreeObj(uuid) {
+		return [...V.scene.measurements, ...V.scene.profiles, ...V.scene.volumes].find(o => o.uuid === uuid) || null;
+	}
+	function removeSceneObj(obj) {
+		if (V.scene.measurements.includes(obj)) V.scene.removeMeasurement(obj);
+		else if (V.scene.profiles.includes(obj)) V.scene.removeProfile(obj);
+		else if (V.scene.volumes.includes(obj)) V.scene.removeVolume(obj);
+	}
+	function treeNodeOf(el) {
+		const tree = $('#jstree_scene').jstree(true);
+		if (!tree) return { tree: null, node: null, obj: null };
+		const node = tree.get_node(String(el.id).replace(/_anchor$/, ''));
+		const uuid = node && node.data && node.data.uuid;
+		return { tree, node, obj: uuid ? findTreeObj(uuid) : null };
+	}
+
+	function initTreeRename() {
+		$('#jstree_scene').on('dblclick.pcs', '.jstree-anchor', function () {
+			const { tree, node, obj } = treeNodeOf(this);
+			if (!obj) return;
+			const anchor = $(this);
+			if (anchor.find('input').length) return;
+			anchor.contents().filter(function () { return this.nodeType === 3; }).remove();
+			const inp = $('<input type="text" style="width:130px;"/>').val(obj.name);
+			anchor.append(inp);
+			inp.focus().select();
+			inp.on('click dblclick mousedown', (ev) => ev.stopPropagation());
+			let done = false;
+			const commit = () => {
+				if (done) return;
+				done = true;
+				const v = String(inp.val()).trim();
+				if (v && v !== obj.name) {
+					obj.name = v;
+					if (window.PCS_PROJECT) window.PCS_PROJECT.markDirty();
+				}
+				try { tree.rename_node(node, obj.name); } catch (_) {}
+				$('#pcs_measure_name').val(obj.name);
+			};
+			inp.on('keydown', (ev) => {
+				ev.stopPropagation();
+				if (ev.key === 'Enter') commit();
+				else if (ev.key === 'Escape') { done = true; try { tree.rename_node(node, obj.name); } catch (_) {} }
+			});
+			inp.on('blur', commit);
+		});
+	}
+
+	function initTreeContextMenu() {
+		const menu = $(`
+			<div id="pcs_tree_menu" style="position:fixed; z-index:30000; display:none;
+				background:#3a3a3a; border:1px solid #999; border-radius:3px; box-shadow:2px 3px 8px rgba(0,0,0,0.5);">
+				<div id="pcs_tree_del" style="padding:5px 22px; cursor:pointer; color:#fff; white-space:nowrap;">削除</div>
+			</div>
+		`).appendTo(document.body);
+		menu.find('#pcs_tree_del')
+			.on('mouseenter', function () { $(this).css('background', '#5a5a5a'); })
+			.on('mouseleave', function () { $(this).css('background', ''); });
+		let targets = [];
+		$('#jstree_scene').on('contextmenu.pcs', '.jstree-anchor', function (e) {
+			const { tree, obj } = treeNodeOf(this);
+			if (!obj) return;
+			e.preventDefault();
+			// 右クリックした項目が複数選択に含まれていれば選択全体を対象にする
+			const selected = tree.get_selected(true)
+				.map(n => (n.data && n.data.uuid) ? findTreeObj(n.data.uuid) : null)
+				.filter(Boolean);
+			targets = (selected.includes(obj) && selected.length > 1) ? selected : [obj];
+			menu.find('#pcs_tree_del').text(targets.length > 1 ? `削除 (${targets.length} 件)` : '削除');
+			menu.css({ left: e.clientX + 'px', top: e.clientY + 'px' }).show();
+		});
+		menu.find('#pcs_tree_del').on('click', () => {
+			const items = targets.map(o => ({
+				kind: V.scene.measurements.includes(o) ? 'measurement' : (V.scene.profiles.includes(o) ? 'profile' : 'volume'),
+				obj: o,
+			}));
+			for (const o of targets) removeSceneObj(o);
+			// 削除も「戻る」で復元できる履歴にする (複数削除は 1 操作として一括復元)
+			recordAction({ type: 'delete', items });
+			targets = [];
+			menu.hide();
+			if (window.PCS_PROJECT) window.PCS_PROJECT.markDirty();
+		});
+		$(document).on('mousedown.pcsmenu', (e) => {
+			if (!$(e.target).closest('#pcs_tree_menu').length) menu.hide();
+		});
+	}
+
+	// Properties パネル: 名前欄 + (Distance のみ) 頂点ごとの点名欄
 	function initPropertiesRename() {
 		$('#jstree_scene').on('select_node.jstree', (e, data) => {
 			setTimeout(() => {
@@ -692,6 +801,29 @@
 						if (window.PCS_PROJECT) window.PCS_PROJECT.markDirty();
 					});
 				panel.prepend(row);
+				// Distance: 頂点ごとの点名 (空欄 = 自動付番。 SIMA 出力に反映)
+				if (V.scene.measurements.includes(obj) && isDistanceMeasure(obj)) {
+					if (!obj.pcsPointNames) obj.pcsPointNames = [];
+					const vwrap = $('<div style="padding:0 10px 6px;"></div>');
+					obj.points.forEach((pt, j) => {
+						const vrow = $(`
+							<div style="display:flex; align-items:center; gap:6px; padding:2px 0;">
+								<span style="flex:none; width:36px;">点${j + 1}</span>
+								<input type="text" class="pcs-vertex-name" data-idx="${j}"
+									style="flex:1; box-sizing:border-box;" placeholder="(自動)"
+									title="SIMA 出力の点名。 空欄なら自動付番"/>
+							</div>
+						`);
+						vrow.find('input').val(obj.pcsPointNames[j] || '')
+							.on('keydown', (ev) => { if (ev.key === 'Enter') ev.target.blur(); })
+							.on('change blur', function () {
+								obj.pcsPointNames[Number(this.dataset.idx)] = this.value.trim();
+								if (window.PCS_PROJECT) window.PCS_PROJECT.markDirty();
+							});
+						vwrap.append(vrow);
+					});
+					row.after(vwrap);
+				}
 			}, 120);
 		});
 	}
@@ -812,6 +944,8 @@
 		hookKeyboard();
 		initStickyMeasure();
 		initPropertiesRename();
+		initTreeRename();
+		initTreeContextMenu();
 	};
 
 	// 自動テスト・将来機能用の内部 handle
