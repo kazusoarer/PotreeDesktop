@@ -540,6 +540,96 @@
 	}
 
 	// ------------------------------------------------------------
+	// 連続計測モード
+	//   アイコンをトグル化: 一度クリックするとハイライトされ、 解除クリックまで
+	//   計測完了のたびに自動で次の計測を開始する (1 点ごとの再クリック不要)。
+	//   引数は本家 sidebar (potree.js initToolbar) と同一。
+	// ------------------------------------------------------------
+	const STICKY_TOOLS = [
+		{ icon: 'angle.png',    kind: 'measure', args: { showDistances: false, showAngles: true, showArea: false, closed: true, maxMarkers: 3, name: 'Angle' } },
+		{ icon: 'point.svg',    kind: 'measure', args: { showDistances: false, showAngles: false, showCoordinates: true, showArea: false, closed: true, maxMarkers: 1, name: 'Point' } },
+		{ icon: 'distance.svg', kind: 'measure', args: { showDistances: true, showArea: false, closed: false, name: 'Distance' } },
+		{ icon: 'height.svg',   kind: 'measure', args: { showDistances: false, showHeight: true, showArea: false, closed: false, maxMarkers: 2, name: 'Height' } },
+		{ icon: 'circle.svg',   kind: 'measure', args: { showDistances: false, showHeight: false, showArea: false, showCircle: true, showEdges: false, closed: false, maxMarkers: 3, name: 'Circle' } },
+		{ icon: 'azimuth.svg',  kind: 'measure', args: { showDistances: false, showHeight: false, showArea: false, showCircle: false, showEdges: false, showAzimuth: true, closed: false, maxMarkers: 2, name: 'Azimuth' } },
+		{ icon: 'area.svg',     kind: 'measure', args: { showDistances: true, showArea: true, closed: true, name: 'Area' } },
+		{ icon: 'profile.svg',  kind: 'profile' },
+	];
+	let stickyActive = null;    // { tool, el }
+	let stickyMeasure = null;   // 進行中の計測 object
+
+	function stickyStart() {
+		if (!stickyActive) return;
+		const t = stickyActive.tool;
+		$('#menu_measurements').next().slideDown();
+		stickyMeasure = (t.kind === 'profile')
+			? V.profileTool.startInsertion()
+			: V.measuringTool.startInsertion(Object.assign({}, t.args));
+	}
+
+	function stickyStop(cancelInsertion) {
+		if (stickyActive) stickyActive.el.removeClass('pcs-sticky-on');
+		stickyActive = null;
+		stickyMeasure = null;
+		if (cancelInsertion) V.dispatchEvent({ type: 'cancel_insertions' });
+	}
+
+	// 点が 1 つも置かれず終わった計測は削除 (= 右クリック連打や解除時のゴミ防止)
+	function cleanupEmpty(m, kind) {
+		try {
+			if (!m || !m.points || m.points.length > 0) return;
+			if (kind === 'profile') V.scene.removeProfile(m);
+			else V.scene.removeMeasurement(m);
+		} catch (_) {}
+	}
+
+	function initStickyMeasure() {
+		const style = document.createElement('style');
+		style.textContent = '.pcs-sticky-on { outline: 2px solid #ffce00; outline-offset: -2px; border-radius: 4px; background: rgba(255,206,0,0.3); }';
+		document.head.appendChild(style);
+
+		const icons = $('#tools img');
+		for (const t of STICKY_TOOLS) {
+			const el = icons.filter((i, e) => (e.src || '').endsWith('/icons/' + t.icon));
+			if (!el.length) continue;
+			el.off('click');
+			el.on('click', () => {
+				const wasMe = stickyActive && stickyActive.tool === t;
+				const prevM = stickyMeasure;
+				const prevKind = stickyActive && stickyActive.tool.kind;
+				stickyStop(true);
+				cleanupEmpty(prevM, prevKind);
+				if (!wasMe) {
+					stickyActive = { tool: t, el };
+					el.addClass('pcs-sticky-on');
+					stickyStart();
+				}
+			});
+		}
+		// 連続計測以外のアイコン (クリッピング等) を押したら連続モードは解除
+		icons.each((i, e) => {
+			if (STICKY_TOOLS.some(t => (e.src || '').endsWith('/icons/' + t.icon))) return;
+			$(e).on('click', () => stickyStop(false));
+		});
+
+		// 挿入終了の検知 → まだ ON なら次の計測を自動開始
+		V.renderer.domElement.addEventListener('mouseup', (e) => {
+			if (!stickyActive) return;
+			const m = stickyMeasure;
+			const kind = stickyActive.tool.kind;
+			setTimeout(() => {
+				if (!stickyActive) return;
+				if (e.button === 2) {                       // 右クリック = 現在の計測を確定して次へ
+					cleanupEmpty(m, kind);
+					stickyStart();
+				} else if (e.button === 0 && m && m.points && m.maxMarkers && m.points.length >= m.maxMarkers) {
+					stickyStart();                            // 規定点数に到達 = 完了して次へ
+				}
+			}, 50);
+		});
+	}
+
+	// ------------------------------------------------------------
 	window.initPcsTools = function (viewer) {
 		V = viewer;
 		if (typeof THREE === 'undefined') {
@@ -549,6 +639,7 @@
 		buildSidebarSection();
 		hookSceneEvents();
 		hookKeyboard();
+		initStickyMeasure();
 	};
 
 	// 自動テスト・将来機能用の内部 handle
@@ -558,5 +649,6 @@
 		get simaEntries() { return SIMA_ENTRIES; },
 		get undoCount() { return undoStack.length; },
 		get redoCount() { return redoStack.length; },
+		get sticky() { return { active: !!stickyActive, icon: stickyActive && stickyActive.tool.icon, measure: stickyMeasure }; },
 	};
 })();
