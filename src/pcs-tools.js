@@ -590,6 +590,9 @@
 	}
 
 	// SIMA テキスト生成 (純関数: テストから直接検証できる)
+	//   結線 = 開放区画: D00 第 4 フィールドを 2 にする (= X:\調査士 の CALX 実例
+	//   「枠結線データ」 が D00,n,名前,2 を使用。 画地 = 閉合は 1)。 閉合点の繰り返しはしない。
+	//   点名: リネームした計測名を反映 (Point = 点名そのもの / Distance = 線名-連番)。
 	function buildSimaText(siteName) {
 		const pointMeasures = V.scene.measurements.filter(isPointMeasure);
 		const distMeasures = V.scene.measurements.filter(isDistanceMeasure);
@@ -602,26 +605,31 @@
 		lines.push('A00,');
 
 		let no = 0;
-		const a01 = (p) => {
+		const a01 = (p, name) => {
 			no++;
 			// SIMA: X=北 (= viewer y) / Y=東 (= viewer x)
-			lines.push(`A01,${no},${no},${f3(p.y)},${f3(p.x)},${f3(p.z)},,`);
-			return no;
+			lines.push(`A01,${no},${name || no},${f3(p.y)},${f3(p.x)},${f3(p.z)},,`);
+			return { id: no, name: name || String(no) };
 		};
-		for (const m of pointMeasures) a01(m.points[0].position);
+		const a01refs = [];
+		for (const m of pointMeasures) {
+			const nm = (m.name && m.name !== 'Point') ? m.name : null;   // リネーム済みなら点名に反映
+			a01refs.push(a01(m.points[0].position, nm));
+		}
 		const parcels = [];
 		for (const m of distMeasures) {
-			const ids = m.points.map(pt => a01(pt.position));
-			parcels.push({ name: m.name && m.name !== 'Distance' ? m.name : `結線${parcels.length + 1}`, ids });
+			const lineName = (m.name && m.name !== 'Distance') ? m.name : `結線${parcels.length + 1}`;
+			const named = (m.name && m.name !== 'Distance');
+			const refs = m.points.map((pt, j) => a01(pt.position, named ? `${lineName}-${j + 1}` : null));
+			parcels.push({ name: lineName, refs });
 		}
 		lines.push('A99,');
 
 		if (parcels.length) {
-			lines.push('Z00,区画ﾃﾞｰﾀ,');
+			lines.push('Z00,結線ﾃﾞｰﾀ,');
 			parcels.forEach((pc, i) => {
-				lines.push(`D00,${i + 1},${pc.name},1,`);
-				// 開放区画 = 点列をそのまま並べ、 先頭点を末尾で繰り返さない (= 閉合しない)
-				for (const id of pc.ids) lines.push(`B01,${id},${id},`);
+				lines.push(`D00,${i + 1},${pc.name},2,`);   // 2 = 開放 (結線) / 1 = 閉合画地
+				for (const r of pc.refs) lines.push(`B01,${r.id},${r.name},`);
 				lines.push('D99,');
 			});
 		}
@@ -651,6 +659,41 @@
 		a.click();
 		setTimeout(() => URL.revokeObjectURL(a.href), 10000);
 		return fname;
+	}
+
+	// ------------------------------------------------------------
+	// 計測のリネーム (Properties パネルに「名前」欄を追加)
+	//   シーンツリーで計測 (Point/Distance 等) や断面を選択すると、 プロパティ最上部に
+	//   名前の編集欄を差し込む。 変更は SIMA 出力の点名・区画名に反映される。
+	// ------------------------------------------------------------
+	function initPropertiesRename() {
+		$('#jstree_scene').on('select_node.jstree', (e, data) => {
+			setTimeout(() => {
+				const uuid = data.node && data.node.data && data.node.data.uuid;
+				if (!uuid) return;
+				const obj = [...V.scene.measurements, ...V.scene.profiles].find(o => o.uuid === uuid);
+				if (!obj) return;
+				const panel = $('#scene_object_properties');
+				if (!panel.length || panel.find('#pcs_measure_name').length) return;
+				const row = $(`
+					<div style="display:flex; align-items:center; gap:6px; padding:6px 10px;">
+						<span style="flex:none;">名前</span>
+						<input id="pcs_measure_name" type="text" style="flex:1; box-sizing:border-box;"
+							title="SIMA 出力の点名・区画名に反映されます"/>
+					</div>
+				`);
+				row.find('input').val(obj.name)
+					.on('keydown', (ev) => { if (ev.key === 'Enter') ev.target.blur(); })
+					.on('change blur', function () {
+						const v = this.value.trim();
+						if (!v || v === obj.name) return;
+						obj.name = v;
+						try { $('#jstree_scene').jstree(true).rename_node(data.node.id, v); } catch (_) {}
+						if (window.PCS_PROJECT) window.PCS_PROJECT.markDirty();
+					});
+				panel.prepend(row);
+			}, 120);
+		});
 	}
 
 	// ------------------------------------------------------------
@@ -768,6 +811,7 @@
 		hookSceneEvents();
 		hookKeyboard();
 		initStickyMeasure();
+		initPropertiesRename();
 	};
 
 	// 自動テスト・将来機能用の内部 handle

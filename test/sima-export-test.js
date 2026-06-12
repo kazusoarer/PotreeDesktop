@@ -53,20 +53,24 @@
 		const L = r.text.split('\r\n');
 
 		check('E04 ヘッダ G00 + 現場名', L[0] === 'G00,01,テスト現場,', L[0]);
-		check('E05 セクション構成', L[1] === 'Z00,座標ﾃﾞｰﾀ,' && L[2] === 'A00,' && L.includes('A99,') &&
-			L.includes('Z00,区画ﾃﾞｰﾀ,') && L[L.length - 2] === 'G99,');
+		check('E05 セクション構成 (結線ﾃﾞｰﾀ)', L[1] === 'Z00,座標ﾃﾞｰﾀ,' && L[2] === 'A00,' && L.includes('A99,') &&
+			L.includes('Z00,結線ﾃﾞｰﾀ,') && L[L.length - 2] === 'G99,');
 		check('E06 A01 自動付番 + 軸入替 (X=北/Y=東) + 標高',
 			L[3] === 'A01,1,1,851200.456,637900.123,450.789,,', L[3]);
 		check('E07 A01 が 7 本', L.filter(s => s.startsWith('A01,')).length === 7);
 
-		// 結線 = 開放区画
-		const d1 = L.indexOf('D00,1,結線1,1,');
-		check('E08 結線1 の D00 (自動命名)', d1 > 0, JSON.stringify(L.filter(s => s.startsWith('D00'))));
-		check('E09 結線1 = B01×3 (開放 = 閉合点の繰り返しなし)',
+		// 結線 = 開放区画 (D00 第 4 フィールド = 2。 CALX 実例「枠結線データ」準拠)
+		const d1 = L.indexOf('D00,1,結線1,2,');
+		check('E08 結線1 の D00 (開放フラグ 2 + 自動命名)', d1 > 0, JSON.stringify(L.filter(s => s.startsWith('D00'))));
+		check('E09 結線1 = B01×3 (閉合点の繰り返しなし)',
 			L[d1 + 1] === 'B01,3,3,' && L[d1 + 2] === 'B01,4,4,' && L[d1 + 3] === 'B01,5,5,' && L[d1 + 4] === 'D99,',
 			L.slice(d1, d1 + 5).join(' | '));
-		const d2 = L.indexOf('D00,2,法面下端,1,');
-		check('E10 リネーム済み距離は名前を引き継ぐ', d2 > 0 && L[d2 + 1] === 'B01,6,6,' && L[d2 + 2] === 'B01,7,7,');
+		const d2 = L.indexOf('D00,2,法面下端,2,');
+		check('E10 リネーム済み距離 = 区画名 + 点名 (線名-連番)',
+			d2 > 0 && L[d2 + 1] === 'B01,6,法面下端-1,' && L[d2 + 2] === 'B01,7,法面下端-2,',
+			L.slice(d2, d2 + 3).join(' | '));
+		check('E10b 点名が A01 にも反映 (法面下端-1)',
+			L.some(s => /^A01,6,法面下端-1,/.test(s)), L.filter(s => s.startsWith('A01,6')).join(''));
 
 		// Shift-JIS 検証 (encode → TextDecoder で復号一致)
 		const bytes = PT.encodeShiftJis(r.text);
@@ -84,12 +88,43 @@
 		if (out) {
 			const buf = fs.readFileSync(out);
 			const text = new TextDecoder('shift-jis').decode(buf);
-			check('E14 出力ファイルも SJIS で読める', text.startsWith('G00,01,') && text.includes('Z00,区画ﾃﾞｰﾀ,'));
+			check('E14 出力ファイルも SJIS で読める', text.startsWith('G00,01,') && text.includes('Z00,結線ﾃﾞｰﾀ,'));
 			// 往復: 自前の SIMA 読込 (着色) パーサで画地 2 件と認識される
 			const parsed = PT.parseSima(text);
-			check('E15 往復読込 (画地 2 / 点 7)', parsed.parcels.length === 2 && parsed.points.size === 7,
+			check('E15 往復読込 (結線 2 / 点 7)', parsed.parcels.length === 2 && parsed.points.size === 7,
 				`${parsed.parcels.length}/${parsed.points.size}`);
 			fs.unlinkSync(out);
+		}
+
+		// ---- Properties パネルからのリネーム → SIMA 反映 ----
+		{
+			const pm = V.scene.measurements.find(m => m.showCoordinates);
+			const dm = V.scene.measurements.find(m => m.showDistances && !m.closed);
+			const tree = $('#jstree_scene').jstree(true);
+			const root = tree.get_json('measurements');
+			const pNode = root.children.find(c => c.data && c.data.uuid === pm.uuid);
+			tree.deselect_all();
+			tree.select_node(pNode.id);
+			await sleep(400);
+			check('E16 Properties に名前欄 (Point 選択時)', $('#pcs_measure_name').length === 1 &&
+				$('#pcs_measure_name').val() === pm.name);
+			$('#pcs_measure_name').val('境界杭5').trigger('change');
+			await sleep(100);
+			check('E17 リネーム反映 (計測名 + ツリー表示)', pm.name === '境界杭5' &&
+				tree.get_node(pNode.id).text.includes('境界杭5'));
+			const dNode = root.children.find(c => c.data && c.data.uuid === dm.uuid);
+			tree.deselect_all();
+			tree.select_node(dNode.id);
+			await sleep(400);
+			$('#pcs_measure_name').val('既設水路').trigger('change');
+			await sleep(100);
+			const r2 = PT.buildSimaText('テスト現場');
+			const L2 = r2.text.split('\r\n');
+			check('E18 SIMA に反映: 点名 + 区画名',
+				L2.some(s => /^A01,1,境界杭5,/.test(s)) &&
+				L2.includes('D00,1,既設水路,2,') &&
+				L2.some(s => /^A01,3,既設水路-1,/.test(s)),
+				L2.filter(s => /境界杭5|既設水路/.test(s)).slice(0, 4).join(' | '));
 		}
 
 		// 後始末
