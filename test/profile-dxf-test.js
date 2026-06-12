@@ -70,10 +70,16 @@
 		const ySpread = Math.max(...pts2d.map(p => p.y)) - Math.min(...pts2d.map(p => p.y));
 		check('P06 2D: 真上表示で断面形状が見える (y 振幅 5m)', Math.abs(ySpread - 5) < 0.001, String(ySpread));
 
-		// ---- 3D (flatten=false) は従来どおり世界座標 ----
+		// ---- 3D ボタン相当 (引数なし) もデフォルトで正面投影 ----
+		const dxfDefault = Potree.DXFProfileExporter.toString(points);
+		const ptsDefault = parseDxfPoints(dxfDefault);
+		check('P07 引数なし (3D ボタン) も正面投影がデフォルト',
+			ptsDefault.length === 3 && ptsDefault[0].x === 0 && ptsDefault[0].y === 450 && ptsDefault[0].z === 0,
+			JSON.stringify(ptsDefault[0]));
+		// 明示的に false を渡した時だけ世界座標 (上級用途)
 		const dxf3d = Potree.DXFProfileExporter.toString(points, false);
 		const pts3d = parseDxfPoints(dxf3d);
-		check('P07 3D: 世界座標のまま (回 regression なし)',
+		check('P07b flatten=false 明示時のみ世界座標',
 			pts3d.length === 3 && pts3d[0].x === 637900 && pts3d[0].y === 851200 && pts3d[0].z === 450,
 			JSON.stringify(pts3d[0]));
 

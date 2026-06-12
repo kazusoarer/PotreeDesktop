@@ -72564,7 +72564,10 @@ ${z}
 			return dxfSection;
 		}
 
-		static toString(points, flatten = false) {
+		// pcs 修正 (2026-06-12): デフォルトを正面投影 (flatten=true) に変更。
+		// 2D/3D どちらのボタンからでも 2 次元 CAD で正しい断面形状が見える。
+		// 世界座標出力が必要な場合のみ明示的に flatten=false を渡す。
+		static toString(points, flatten = true) {
 
 			const pCloud = DXFProfileExporter.toXYZ(points, flatten);
 
