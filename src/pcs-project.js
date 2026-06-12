@@ -308,6 +308,48 @@
 		}).catch(e => setWarn('削除できません: ' + e.message));
 	}
 
+	// ------------------------------------------------------------
+	// URL 公開 (= これまで会話で依頼していた Cloudflare 公開をボタン化)
+	//   現場の変換済み点群を再変換なしで R2+Pages へ公開し、 限定 URL を発行する。
+	//   公開ボタンを押した時点の編集状態 (計測 / クリッピング / 視点 / 表示設定) も
+	//   埋め込み、 相手方の画面でそのまま復元される。
+	// ------------------------------------------------------------
+	const PUBLISH_SCRIPT = 'C:\\potree_share\\publish-pointcloud.ps1';
+
+	function buildPublishArgs() {
+		if (!SITE) return { error: '公開する現場がありません (点群を読み込んでください)' };
+		const dataDir = path.join(SITE.dir, 'data');
+		let clouds = [];
+		try { clouds = fs.readdirSync(dataDir).filter(d => fs.existsSync(path.join(dataDir, d, 'metadata.json'))); } catch (_) {}
+		if (!clouds.length) return { error: '公開できる点群がありません' };
+		const scene = Potree.saveProject(V);
+		scene.pointclouds = [];   // 点群はローカルパス参照のため除外 (Web 側は R2 の URL から読む)
+		const sceneJson = path.join(SITE.dir, 'publish_scene.json');
+		fs.writeFileSync(sceneJson, JSON.stringify(scene), 'utf8');
+		return {
+			prebuiltDir: path.join(dataDir, clouds[0]),
+			sceneJson,
+			projectName: SITE.displayName,
+			multi: clouds.length > 1,
+		};
+	}
+
+	function publishSite() {
+		const a = buildPublishArgs();
+		if (a.error) { setWarn(a.error); return; }
+		if (!fs.existsSync(PUBLISH_SCRIPT)) { setWarn('公開スクリプトが見つかりません: ' + PUBLISH_SCRIPT); return; }
+		const note = a.multi ? '\n(複数点群のうち最初の 1 つを公開します)' : '';
+		if (!window.confirm(`現場「${a.projectName}」を URL 公開します。\n限定 URL / 30 日で自動削除。 いまの計測・クリッピング・視点もそのまま相手に表示されます。${note}\nよろしいですか?`)) return;
+		const { spawn } = window.require('child_process');
+		const child = spawn('powershell.exe', [
+			'-NoExit', '-ExecutionPolicy', 'Bypass', '-File', PUBLISH_SCRIPT,
+			'-PrebuiltDir', a.prebuiltDir,
+			'-SceneJsonPath', a.sceneJson,
+			'-ProjectName', a.projectName,
+		], { cwd: 'C:\\potree_share', detached: true, stdio: 'ignore', windowsHide: false });
+		child.unref();
+	}
+
 	function pickProjectFile() {
 		const inp = document.createElement('input');
 		inp.type = 'file';
@@ -404,6 +446,10 @@
 					<input id="pcs_site_new" type="button" value="新規" style="flex:1;" title="新しい現場を始める"/>
 					<input id="pcs_site_openfile" type="button" value="開く" style="flex:1;" title="現場ファイルを選んで開く"/>
 				</span>
+				<span style="display:flex; gap:6px; margin-top:4px;">
+					<input id="pcs_site_publish" type="button" value="URL 公開" style="flex:1;"
+						title="Cloudflare に限定 URL で公開 (30 日で自動削除)。 いまの計測・クリッピング・視点もそのまま相手に表示されます"/>
+				</span>
 				<div class="divider"><span>現場一覧</span></div>
 				<input id="pcs_site_search" type="text" placeholder="現場名で検索…" style="width:100%; box-sizing:border-box;"/>
 				<div id="pcs_site_list" style="max-height:180px; overflow:auto;"></div>
@@ -418,6 +464,7 @@
 		$('#pcs_site_save').click(() => saveSite());
 		$('#pcs_site_new').click(() => newSite());
 		$('#pcs_site_openfile').click(() => pickProjectFile());
+		$('#pcs_site_publish').click(() => publishSite());
 		$('#pcs_site_search').on('input', refreshList);
 		// 作業中の現場名もダブルクリックでリネーム
 		$('#pcs_site_name').on('dblclick', function () {
@@ -445,6 +492,7 @@
 
 	// ------------------------------------------------------------
 	window.initPcsProject = async function (viewer) {
+		if (typeof window.require !== 'function') return;   // Web 公開 mode では現場管理を出さない
 		V = viewer;
 		fs = window.require('fs');
 		path = window.require('path');
@@ -458,7 +506,7 @@
 
 	window.PCS_PROJECT = {
 		prepareConversion, onCloudLoaded, saveSite, openSiteFile, newSite,
-		markDirty, scanSites, renameSiteFile,
+		markDirty, scanSites, renameSiteFile, buildPublishArgs, publishSite,
 		get site() { return SITE; },
 		get parent() { return PARENT; },
 		get dirty() { return dirty; },

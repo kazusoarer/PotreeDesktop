@@ -15,8 +15,12 @@
 	<link rel="stylesheet" type="text/css" href="./src/desktop.css">
 
 	<style>
-
+		/* pcs: Web 公開 mode ではデスクトップ専用 UI を隠す */
+		body.pcs-web-mode #pointcloud_file_dropzone,
+		body.pcs-web-mode #converter_panel { display: none !important; }
 	</style>
+	<!-- pcs: Web 公開用 SEO 除外 (Electron でも害なし) -->
+	<meta name="robots" content="noindex,nofollow,noarchive,nosnippet">
 </head>
 
 <body>
@@ -125,6 +129,8 @@
 	<!-- pcs: 現場管理 (保存/開く/一覧) -->
 	<script src="./src/pcs-project.js"></script>
 
+	<!-- PCS:VIEWER_CONFIG_INJECT publish-pointcloud.ps1 が URL 公開時にこの comment を viewer-config.js の script tag へ置換する。 Electron では comment のまま = 読み込みが発生せず 404 も出ない -->
+
 		<script>
 		let elSplatQuality = $("#converter_choice");
 		elSplatQuality.selectgroup({title: "Converter Choice"});
@@ -147,35 +153,41 @@
 
 		<script type="module">
 
-		import {
-			loadDroppedPointcloud, 
-			createPlaceholder, 
-			convert_17, 
-			convert_20, 
-			doConversion,
-			dragEnter, dragOver, dragLeave, dropHandler,
-		} from "./src/desktop.js";
+		// pcs: Web / Electron 兼用 entry。 判定 = viewer-config.js (公開時に注入) の有無
+		const isWeb = !!window.POINTCLOUD_CONFIG;
+		if (isWeb) document.body.classList.add("pcs-web-mode");
 
-		{
-			// open links in the standard browser instead of electron
-			// see https://github.com/electron/electron/issues/1344
-			const shell = require('electron').shell;
-			$(document).on('click', 'a[href^="http"]', function(event) {
-				event.preventDefault();
-				shell.openExternal(this.href);
-			});
+		let desktopMod = null;
+		if (!isWeb) {
+			desktopMod = await import("./src/desktop.js");
+
+			{
+				// open links in the standard browser instead of electron
+				// see https://github.com/electron/electron/issues/1344
+				const shell = require('electron').shell;
+				$(document).on('click', 'a[href^="http"]', function(event) {
+					event.preventDefault();
+					shell.openExternal(this.href);
+				});
+			}
+
+			// pcs: 自動テスト・現場管理から変換/読込を呼べるように公開
+			window.PCS_DESKTOP = {
+				loadDroppedPointcloud: desktopMod.loadDroppedPointcloud,
+				convert_20: desktopMod.convert_20,
+				doConversion: desktopMod.doConversion,
+				dragEnter: desktopMod.dragEnter,
+				dragLeave: desktopMod.dragLeave,
+			};
+
+			let elBody = document.body;
+
+			elBody.addEventListener("dragenter", desktopMod.dragEnter, false);
+			elBody.addEventListener("dragover", desktopMod.dragOver, false);
+			elBody.addEventListener("dragleave", desktopMod.dragLeave, false);
+			elBody.addEventListener("drop", desktopMod.dropHandler, false);
 		}
 
-		// pcs: 自動テスト・現場管理から変換/読込を呼べるように公開
-		window.PCS_DESKTOP = { loadDroppedPointcloud, convert_20, doConversion, dragEnter, dragLeave };
-
-		let elBody = document.body;
-
-		elBody.addEventListener("dragenter", dragEnter, false);
-		elBody.addEventListener("dragover", dragOver, false);
-		elBody.addEventListener("dragleave", dragLeave, false);
-		elBody.addEventListener("drop", dropHandler, false);
-	
 		let elRenderArea = document.getElementById("potree_render_area");
 		let viewerArgs = {
 			noDragAndDrop: true,
@@ -185,13 +197,24 @@
 		// pcs: データオープンは常にハイクオリティ (Splat Quality = High Quality)
 		viewer.useHQ = true;
 
-		viewer.setEDLEnabled(true);
-		viewer.setFOV(60);
-		viewer.setPointBudget(3*1000*1000);
-		viewer.setMinNodeSize(0);
+		if (isWeb) {
+			const cfg = window.POINTCLOUD_CONFIG;
+			if (cfg.title) document.title = cfg.title;
+			viewer.setEDLEnabled(false);
+			viewer.setFOV(40);
+			viewer.setPointBudget(cfg.pointBudget || 2000000);
+			if (viewer.renderer && viewer.renderer.setPixelRatio) {
+				viewer.renderer.setPixelRatio(window.devicePixelRatio || 1);
+			}
+			viewer.setDescription(cfg.description || cfg.title || "");
+		} else {
+			viewer.setEDLEnabled(true);
+			viewer.setFOV(60);
+			viewer.setPointBudget(3*1000*1000);
+			viewer.setMinNodeSize(0);
+			viewer.setDescription("");
+		}
 		viewer.loadSettingsFromURL();
-		
-		viewer.setDescription("");
 		
 		viewer.loadGUI(() => {
 			viewer.setLanguage('en');
@@ -201,10 +224,10 @@
 			$("#menu_filters").next().show();
 			viewer.toggleSidebar();
 
-			// pcs: 左パネルに「現場ツール」 section (SIMA 境界線 / 一つ戻る・進む)
+			// pcs: 左パネルに「現場ツール」 section (SIMA 境界線 / 一つ戻る・進む)。 Web でも有効
 			if (window.initPcsTools) window.initPcsTools(viewer);
-			// pcs: 左パネル最上部に「現場」 section (現場管理)。 pending の現場もここで復元
-			if (window.initPcsProject) window.initPcsProject(viewer);
+			// pcs: 「現場」 section (現場管理) はデスクトップ専用
+			if (!isWeb && window.initPcsProject) window.initPcsProject(viewer);
 
 
 			// let section = $(`
@@ -341,9 +364,30 @@
 		// 	viewer.postMessage(message, {duration: 15000});
 		// });
 
+		// pcs: Web 公開 mode — 案件点群の読込 + 公開時の編集状態 (計測/クリッピング/視点) の復元
+		if (isWeb) {
+			const cfg = window.POINTCLOUD_CONFIG;
+			if (cfg.pointCloudUrl && cfg.pointCloudUrl !== "REPLACE_ME_AT_PUBLISH") {
+				Potree.loadPointCloud(cfg.pointCloudUrl, cfg.title || "pointcloud", async (e) => {
+					if (!e || !e.pointcloud) { console.error("[pcs] loadPointCloud failed"); return; }
+					viewer.scene.addPointCloud(e.pointcloud);
+					const mat = e.pointcloud.material;
+					mat.size = 1;
+					mat.pointSizeType = Potree.PointSizeType.ADAPTIVE;
+					mat.shape = Potree.PointShape.SQUARE;
+					if (cfg.scene) {
+						try { await Potree.loadProject(viewer, cfg.scene); }   // 視点もここで復元される
+						catch (err) { console.error("[pcs] scene restore failed:", err); }
+					} else {
+						viewer.fitToScreen();
+					}
+				});
+			}
+		}
+
 		window.addEventListener('error', (e) => {
 			//console.log(e);
-			viewer.postError(e.error.message);
+			if (e.error) viewer.postError(e.error.message);
 		});
 
 		// pcs: 開発専用の自動テストフック (env PCS_TEST に script path を渡した時だけ動く)
