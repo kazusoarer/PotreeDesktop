@@ -122,6 +122,8 @@
 	<!-- pcs: 現場ツール (SIMA 境界線 / 一つ戻る・進む)。 three.min.js は Potree 内部と同じ r124 -->
 	<script src="./libs/three.js/build/three.min.js"></script>
 	<script src="./src/pcs-tools.js"></script>
+	<!-- pcs: 現場管理 (保存/開く/一覧) -->
+	<script src="./src/pcs-project.js"></script>
 
 		<script>
 		let elSplatQuality = $("#converter_choice");
@@ -164,6 +166,9 @@
 			});
 		}
 
+		// pcs: 自動テスト・現場管理から変換/読込を呼べるように公開
+		window.PCS_DESKTOP = { loadDroppedPointcloud, convert_20, doConversion };
+
 		let elBody = document.body;
 
 		elBody.addEventListener("dragenter", dragEnter, false);
@@ -198,6 +203,8 @@
 
 			// pcs: 左パネルに「現場ツール」 section (SIMA 境界線 / 一つ戻る・進む)
 			if (window.initPcsTools) window.initPcsTools(viewer);
+			// pcs: 左パネル最上部に「現場」 section (現場管理)。 pending の現場もここで復元
+			if (window.initPcsProject) window.initPcsProject(viewer);
 
 
 			// let section = $(`

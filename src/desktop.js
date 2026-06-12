@@ -167,6 +167,9 @@ export function convert_17(inputPaths, chosenPath, pointcloudName){
 			material.pointSizeType = Potree.PointSizeType.ADAPTIVE;
 
 			//viewer.zoomTo(e.pointcloud);
+
+			// pcs: 現場管理 — 退避 file の削除 + 現場 file の自動更新
+			if(window.PCS_PROJECT) window.PCS_PROJECT.onCloudLoaded();
 		});
 	});
 }
@@ -275,6 +278,9 @@ export function convert_20(inputPaths, chosenPath, pointcloudName){
 			viewer.scene.addPointCloud(pointcloud);
 			//viewer.fitToScreen();
 			viewer.zoomTo(e.pointcloud);
+
+			// pcs: 現場管理 — 退避 file の削除 + 現場 file の自動更新
+			if(window.PCS_PROJECT) window.PCS_PROJECT.onCloudLoaded();
 		});
 
 	});
@@ -291,11 +297,19 @@ export async function doConversion(inputPaths, suggestedDirectory, suggestedName
 	console.log("suggested directory: ", suggestedDirectory);
 	console.log("suggested name: ", suggestedName);
 
-	let i = 1; 
+	let i = 1;
 	let suggestedPath = `${suggestedDirectory}/${suggestedName}`;
 	while(fs.existsSync(suggestedPath)){
 		suggestedPath = `${suggestedDirectory}/${suggestedName}_${i}`;
 		i++;
+	}
+
+	// pcs: 現場管理 — 変換先を現場フォルダ内へ。 日本語名の LAZ は ASCII 名へ退避
+	// (PotreeConverter は日本語パス入力を読めないため。 退避 file は読込完了後に自動削除)
+	if(window.PCS_PROJECT){
+		const prep = window.PCS_PROJECT.prepareConversion(inputPaths, suggestedName);
+		inputPaths = prep.inputPaths;
+		suggestedPath = prep.targetDir;
 	}
 
 
@@ -468,7 +482,10 @@ export async function dropHandler(event){
 				const text = await file.text();
 				const json = JSON5.parse(text);
 
-				if(json.type === "Potree"){
+				if(json.pcsProject && window.PCS_PROJECT){
+					// pcs: 現場ファイルのドロップ = 現場を開く (reload 経由で完全復元)
+					window.PCS_PROJECT.openSiteFile(path);
+				}else if(json.type === "Potree"){
 					Potree.loadProject(viewer, json);
 				}
 			}catch(e){

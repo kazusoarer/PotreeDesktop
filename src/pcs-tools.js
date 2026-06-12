@@ -248,6 +248,7 @@
 			}
 			b.attr.needsUpdate = true;
 		}
+		if (window.PCS_PROJECT) window.PCS_PROJECT.markDirty();
 	}
 
 	// ラベルのリネーム (表示名のみ。 着色・履歴には影響しない)
@@ -256,6 +257,7 @@
 		if (!v) return;
 		entry.label = v;
 		refreshSimaList();
+		if (window.PCS_PROJECT) window.PCS_PROJECT.markDirty();
 	}
 
 	// 読込後の線幅変更: 元色に戻してから新しい幅で即座に着色し直す
@@ -270,6 +272,7 @@
 			ensureProcessTimer();
 			processEntries();
 		}
+		if (window.PCS_PROJECT) window.PCS_PROJECT.markDirty();
 	}
 
 	function activateEntry(entry) {
@@ -285,6 +288,7 @@
 		if (i >= 0) SIMA_ENTRIES.splice(i, 1);
 		purge(entry);
 		refreshSimaList();
+		if (window.PCS_PROJECT) window.PCS_PROJECT.markDirty();
 	}
 
 	// ------------------------------------------------------------
@@ -304,7 +308,7 @@
 		return $('#pcs_sima_color').val() || '#ff0000';
 	}
 
-	function importSimaText(text, label, widthM, colorHex) {
+	function importSimaText(text, label, widthM, colorHex, opts) {
 		const parsed = parseSima(text);
 		if (parsed.parcels.length === 0) {
 			setStatus(`画地データ (D00) がありません (座標点 ${parsed.points.size} 点のみ)。着色できません`, true);
@@ -321,6 +325,7 @@
 		const entry = {
 			label, segments, halfW, widthM: w,
 			colorHex: col, rgb: hexToRgb(col),
+			simText: text,                       // 現場保存用 (= 現場ファイルへ埋め込む)
 			bbox: entryBBox(segments, halfW),
 			grid: buildSegmentGrid(segments, halfW),
 			active: true,
@@ -329,7 +334,8 @@
 			matched: 0,
 		};
 		SIMA_ENTRIES.push(entry);
-		recordAction({ type: 'sima', obj: entry });
+		if (!(opts && opts.noHistory)) recordAction({ type: 'sima', obj: entry });
+		if (window.PCS_PROJECT && !(opts && opts.noHistory)) window.PCS_PROJECT.markDirty();
 		ensureProcessTimer();
 		processEntries();
 		refreshSimaList();
