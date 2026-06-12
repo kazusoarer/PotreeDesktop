@@ -1,19 +1,22 @@
 // ============================================================
-// pcs-tools.js — 現場ツール (0 ベース再出発の機能 1 号)
-//   1. SIMA (.sim) 読込 → 画地 (境界) を赤線で表示
-//   2. 一つ戻る / 一つ進む (計測・体積・断面・SIMA の追加履歴)
-//   3. ボタンは全て左パネル (Potree サイドバー) の「現場ツール」 section
-// 使い方: index.html で three.min.js / 本 file を読み込み、
-//         viewer.loadGUI(() => { initPcsTools(viewer); })
+// pcs-tools.js — 現場ツール v2 (点群着色方式)
+//   1. SIMA (.sim) 読込 → 境界線と水平位置 (XY) が一致する「点群の点そのもの」を着色。
+//      高さは問わない (= 建物・生垣・電線も境界直上なら着色される)。
+//      点群表面に完全フィットした境界線が自然に描かれる (友人版と同方式)。
+//   2. 読込時に着色線幅 (m) と線色を左パネルで指定できる。
+//   3. 一つ戻る / 一つ進む (計測・体積・断面・SIMA 着色の履歴)。
+//   4. ボタンは全て左パネル (Potree サイドバー) の「現場ツール」 section。
+// 技術メモ: Potree 1.8 の Renderer は attribute.version を毎フレーム比較して
+//           GPU バッファを再 upload するため、 rgba 属性の書換え + needsUpdate で
+//           実行中の再着色が画面に反映される (potree.js L63298 で確認済)。
 // ============================================================
 (function () {
 	'use strict';
 
 	let V = null;
-	const SIMA_GROUPS = [];          // 読込済み SIMA の THREE.Group
-	const Z_OFFSET = 0.3;            // 表面ぴったりだと埋もれるため僅かに浮かせる (m)
-	const SAMPLE_CELL = 1.0;         // 高さサンプリングのグリッド (m)
-	const SEARCH_RING_MAX = 8;       // 高さが見つからない時に何 m 四方まで探すか
+	const SIMA_ENTRIES = [];        // {label, segments, bbox, halfW, rgb:[r,g,b], colorHex, widthM, active, processed(WeakSet), backups(Map), matched}
+	const GRID_CELL = 4.0;          // 線分検索グリッド (m)
+	let processTimer = null;
 
 	// ------------------------------------------------------------
 	// SIMA 共通フォーマット解析
@@ -21,9 +24,8 @@
 	//   D00,画地番号,画地名,…                      … 画地 (区画) 開始
 	//   B01,…                                      … 画地の構成点 (A01 の点番号を参照)
 	//   D99                                         … 画地終了
-	// 注意: B01 の点番号位置は出力ソフトで揺れがある (= f[1] の場合と f[2] の場合)
-	//       → 両方を points と突き合わせて解決する。
 	// 座標系: SIMA は X=北 / Y=東 (測量系)。 viewer 世界は x=東 / y=北 → 入替える。
+	// 標高は使わない (= 着色は水平位置のみで判定するため、 標高 0 の SIMA でも正しく動く)。
 	// ------------------------------------------------------------
 	function parseSima(text) {
 		const points = new Map();
@@ -38,9 +40,8 @@
 				const id = f[1];
 				const X = parseFloat(f[3]);   // 北
 				const Y = parseFloat(f[4]);   // 東
-				const Z = (f.length > 5 && f[5] !== '') ? parseFloat(f[5]) : NaN;
 				if (id && isFinite(X) && isFinite(Y)) {
-					points.set(id, { e: Y, n: X, z: isFinite(Z) ? Z : null, name: f[2] || id });
+					points.set(id, { e: Y, n: X, name: f[2] || id });
 				}
 			} else if (code === 'D00') {
 				cur = { name: f[2] || f[1] || ('画地' + (parcels.length + 1)), refs: [] };
@@ -58,191 +59,10 @@
 	function resolveParcelPoints(parcel, points) {
 		const out = [];
 		for (const f of parcel.refs) {
-			const p = points.get(f[1]) || points.get(f[2]);
+			const p = points.get(f[1]) || points.get(f[2]);   // 点番号位置の揺れに両対応
 			if (p) out.push(p);
 		}
 		return out;
-	}
-
-	// 標高が SIMA に無い点の代替 Z (= 標高あり点の平均 → 無ければ点群の中心高さ)
-	function fallbackZ(points) {
-		let sum = 0, n = 0;
-		for (const p of points.values()) if (p.z != null) { sum += p.z; n++; }
-		if (n > 0) return sum / n;
-		try {
-			const pc = V.scene.pointclouds[0];
-			const bb = pc.boundingBox.clone().applyMatrix4(pc.matrixWorld);
-			return (bb.min.z + bb.max.z) / 2;
-		} catch (_) { return 0; }
-	}
-
-	// ------------------------------------------------------------
-	// 点群表面への高さフィット (= ドレープ)
-	//   SIMA の標高は 0 や別基準のことが多く、 そのまま使うと線が宙に浮く / 沈む。
-	//   → 読込済みの点群から境界線位置の地表高さを拾い、 線を表面に沿わせる。
-	//   読込済み octree node (THREE.Points) を走査して SIMA 範囲の点を 1m グリッドに集計。
-	// ------------------------------------------------------------
-	function buildHeightSampler(parsed) {
-		let minE = Infinity, maxE = -Infinity, minN = Infinity, maxN = -Infinity;
-		for (const p of parsed.points.values()) {
-			if (p.e < minE) minE = p.e; if (p.e > maxE) maxE = p.e;
-			if (p.n < minN) minN = p.n; if (p.n > maxN) maxN = p.n;
-		}
-		const M = SEARCH_RING_MAX + 20;   // 余白
-		minE -= M; maxE += M; minN -= M; maxN += M;
-
-		const cells = new Map();          // "ix_iy" -> z の配列
-		const v = new THREE.Vector3();
-		for (const pc of V.scene.pointclouds) {
-			pc.updateMatrixWorld(true);
-			pc.traverse((obj) => {
-				if (!obj.isPoints || !obj.geometry) return;
-				const ga = obj.geometry.getAttribute('position');
-				if (!ga) return;
-				if (obj.geometry.boundingBox) {
-					const bb = obj.geometry.boundingBox.clone().applyMatrix4(obj.matrixWorld);
-					if (bb.max.x < minE || bb.min.x > maxE || bb.max.y < minN || bb.min.y > maxN) return;
-				}
-				for (let i = 0; i < ga.count; i++) {
-					v.fromBufferAttribute(ga, i).applyMatrix4(obj.matrixWorld);
-					if (v.x < minE || v.x > maxE || v.y < minN || v.y > maxN) continue;
-					const key = Math.floor(v.x / SAMPLE_CELL) + '_' + Math.floor(v.y / SAMPLE_CELL);
-					let arr = cells.get(key);
-					if (!arr) { arr = []; cells.set(key, arr); }
-					arr.push(v.z);
-				}
-			});
-		}
-		return cells;
-	}
-
-	// その場所の表面高さ。 セルが空なら周囲のリングを SEARCH_RING_MAX m まで拡げて探す。
-	// 下位 25% 値を使う (= 電線・樹木より地表寄り、 かつ外れ値ノイズに揺られない)。
-	function heightAt(cells, e, n) {
-		const ie = Math.floor(e / SAMPLE_CELL), inn = Math.floor(n / SAMPLE_CELL);
-		for (let r = 0; r <= SEARCH_RING_MAX; r++) {
-			const zs = [];
-			for (let dx = -r; dx <= r; dx++) {
-				for (let dy = -r; dy <= r; dy++) {
-					if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
-					const arr = cells.get((ie + dx) + '_' + (inn + dy));
-					if (arr) for (const z of arr) zs.push(z);
-				}
-			}
-			if (zs.length) {
-				zs.sort((a, b) => a - b);
-				return zs[Math.floor(zs.length * 0.25)];
-			}
-		}
-		return null;
-	}
-
-	// 辺を細分化 (= 直線の途中も地形に沿うように)
-	function densifyRing(pts, step) {
-		const out = [];
-		for (let i = 0; i < pts.length; i++) {
-			const a = pts[i], b = pts[(i + 1) % pts.length];
-			const len = Math.hypot(b.e - a.e, b.n - a.n);
-			const nSeg = Math.max(1, Math.ceil(len / step));
-			for (let k = 0; k < nSeg; k++) {
-				const t = k / nSeg;
-				out.push({ e: a.e + (b.e - a.e) * t, n: a.n + (b.n - a.n) * t });
-			}
-		}
-		return out;
-	}
-
-	// 画地 1 つ分の赤線を生成 (drape = 高さグリッド。 null なら SIMA 標高 / 固定高さ)
-	function buildParcelLine(pts, cells, refZ, anchor) {
-		const perimeter = pts.reduce((s, p, i) => {
-			const q = pts[(i + 1) % pts.length];
-			return s + Math.hypot(q.e - p.e, q.n - p.n);
-		}, 0);
-		const step = Math.min(5, Math.max(0.5, perimeter / 400));
-		const ring = densifyRing(pts, step);
-
-		// 1st pass: 表面高さ
-		let sampledSum = 0, sampledN = 0;
-		const zs = ring.map(p => {
-			const z = cells ? heightAt(cells, p.e, p.n) : null;
-			if (z != null) { sampledSum += z; sampledN++; }
-			return z;
-		});
-		const parcelAvg = sampledN > 0 ? sampledSum / sampledN : null;
-		// 2nd pass: 欠測は画地平均 → SIMA 標高 → 全体 fallback
-		const simaZ = (i) => {
-			const src = pts[0].z;   // 画地内は概ね同水準とみなす
-			return src != null ? src : refZ;
-		};
-		const finalZ = zs.map((z, i) => (z != null ? z : (parcelAvg != null ? parcelAvg : simaZ(i))));
-
-		const pos = new Float32Array(ring.length * 3);
-		ring.forEach((p, i) => {
-			pos[i * 3]     = p.e - anchor.x;
-			pos[i * 3 + 1] = p.n - anchor.y;
-			pos[i * 3 + 2] = finalZ[i] + Z_OFFSET - anchor.z;
-		});
-		const geo = new THREE.BufferGeometry();
-		geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-		const mat = new THREE.LineBasicMaterial({ color: 0xff0000, depthTest: false, depthWrite: false, transparent: true });
-		const line = new THREE.LineLoop(geo, mat);
-		line.renderOrder = 99990;   // 点群より常に手前 (= 境界が埋もれない)
-		return { line, fitted: sampledN > 0 };
-	}
-
-	// 赤線描画。 大座標 (数十万 m) を Float32 に直接入れると cm 単位で歪むため、
-	// 1 点目を anchor にして相対座標で geometry を作り、 group.position で戻す。
-	function drawSima(parsed, label) {
-		const group = new THREE.Group();
-		group.name = 'SIMA: ' + label;
-		group.userData.pcsParsed = parsed;   // 再フィット用に保持
-		const refZ = fallbackZ(parsed.points);
-		const cells = V.scene.pointclouds.length > 0 ? buildHeightSampler(parsed) : null;
-		let drawn = 0, skipped = 0, fittedCount = 0;
-		let anchor = null;
-		for (const parcel of parsed.parcels) {
-			const pts = resolveParcelPoints(parcel, parsed.points);
-			if (pts.length < 3) { skipped++; continue; }
-			if (!anchor) {
-				anchor = { x: pts[0].e, y: pts[0].n, z: (pts[0].z != null ? pts[0].z : refZ) };
-				group.position.set(anchor.x, anchor.y, anchor.z);
-			}
-			const r = buildParcelLine(pts, cells, refZ, anchor);
-			if (r.fitted) fittedCount++;
-			group.add(r.line);
-			drawn++;
-		}
-		if (drawn === 0) return { group: null, drawn, skipped, fittedCount };
-		V.scene.scene.add(group);
-		SIMA_GROUPS.push(group);
-		return { group, drawn, skipped, fittedCount };
-	}
-
-	// 再フィット (= 点群の詳細 LOD が読み込まれた後に高さを取り直す)
-	function refitSimaGroup(group) {
-		const parsed = group.userData.pcsParsed;
-		if (!parsed) return;
-		const refZ = fallbackZ(parsed.points);
-		const cells = V.scene.pointclouds.length > 0 ? buildHeightSampler(parsed) : null;
-		const anchor = { x: group.position.x, y: group.position.y, z: group.position.z };
-		while (group.children.length) {
-			const c = group.children[0];
-			group.remove(c);
-			if (c.geometry) c.geometry.dispose();
-			if (c.material) c.material.dispose();
-		}
-		let fittedCount = 0, drawn = 0;
-		for (const parcel of parsed.parcels) {
-			const pts = resolveParcelPoints(parcel, parsed.points);
-			if (pts.length < 3) continue;
-			const r = buildParcelLine(pts, cells, refZ, anchor);
-			if (r.fitted) fittedCount++;
-			group.add(r.line);
-			drawn++;
-		}
-		setStatus(fittedCount > 0
-			? `高さを点群表面にフィットし直しました (${fittedCount}/${drawn} 画地)`
-			: '点群から高さを取得できませんでした (点群を読み込んでから再フィットしてください)', fittedCount === 0);
 	}
 
 	// Shift_JIS (測量ソフトの標準) → 駄目なら UTF-8。 文字化け数で良い方を採用。
@@ -258,32 +78,235 @@
 		return bad(sjis) <= bad(utf8) ? sjis : utf8;
 	}
 
-	function importSimaText(text, label) {
+	// ------------------------------------------------------------
+	// 境界線分の構築 + 空間グリッド (= 点ごとの距離判定を近傍線分だけに絞る)
+	// ------------------------------------------------------------
+	function buildSegments(parsed) {
+		const segments = [];
+		let skipped = 0;
+		for (const parcel of parsed.parcels) {
+			const pts = resolveParcelPoints(parcel, parsed.points);
+			if (pts.length < 2) { skipped++; continue; }
+			for (let i = 0; i < pts.length; i++) {
+				const a = pts[i], b = pts[(i + 1) % pts.length];   // 閉合
+				segments.push({ ax: a.e, ay: a.n, bx: b.e, by: b.n });
+			}
+		}
+		return { segments, skipped };
+	}
+
+	function buildSegmentGrid(segments, halfW) {
+		const grid = new Map();
+		const pad = halfW + 0.01;
+		segments.forEach((s, idx) => {
+			const minX = Math.min(s.ax, s.bx) - pad, maxX = Math.max(s.ax, s.bx) + pad;
+			const minY = Math.min(s.ay, s.by) - pad, maxY = Math.max(s.ay, s.by) + pad;
+			for (let ix = Math.floor(minX / GRID_CELL); ix <= Math.floor(maxX / GRID_CELL); ix++) {
+				for (let iy = Math.floor(minY / GRID_CELL); iy <= Math.floor(maxY / GRID_CELL); iy++) {
+					const key = ix + '_' + iy;
+					let arr = grid.get(key);
+					if (!arr) { arr = []; grid.set(key, arr); }
+					arr.push(idx);
+				}
+			}
+		});
+		return grid;
+	}
+
+	function distToSegment2D(px, py, s) {
+		const dx = s.bx - s.ax, dy = s.by - s.ay;
+		const L2 = dx * dx + dy * dy;
+		let t = L2 > 0 ? ((px - s.ax) * dx + (py - s.ay) * dy) / L2 : 0;
+		t = Math.max(0, Math.min(1, t));
+		const qx = s.ax + t * dx, qy = s.ay + t * dy;
+		return Math.hypot(px - qx, py - qy);
+	}
+
+	// ------------------------------------------------------------
+	// 着色エンジン
+	//   読込済み octree node (THREE.Points) の rgba 属性を直接書換える。
+	//   ナビゲーションで新しい node が読み込まれても、 定期処理が自動で追い着色する。
+	//   元色は backup に保持し、「一つ戻る」「削除」で完全復元できる。
+	// ------------------------------------------------------------
+	function entryBBox(segments, halfW) {
+		let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+		for (const s of segments) {
+			minX = Math.min(minX, s.ax, s.bx); maxX = Math.max(maxX, s.ax, s.bx);
+			minY = Math.min(minY, s.ay, s.by); maxY = Math.max(maxY, s.ay, s.by);
+		}
+		return { minX: minX - halfW, maxX: maxX + halfW, minY: minY - halfW, maxY: maxY + halfW };
+	}
+
+	function colorizeGeometry(entry, obj) {
+		const geo = obj.geometry;
+		const posAttr = geo.getAttribute('position');
+		const colAttr = geo.getAttribute('rgba') || geo.getAttribute('color');
+		if (!posAttr || !colAttr) return 0;
+		const stride = colAttr.itemSize;
+		const arr = colAttr.array;
+		const v = new THREE.Vector3();
+		const bb = entry.bbox;
+		const indices = [];
+		const orig = [];
+		for (let i = 0; i < posAttr.count; i++) {
+			v.fromBufferAttribute(posAttr, i).applyMatrix4(obj.matrixWorld);
+			if (v.x < bb.minX || v.x > bb.maxX || v.y < bb.minY || v.y > bb.maxY) continue;
+			const key = Math.floor(v.x / GRID_CELL) + '_' + Math.floor(v.y / GRID_CELL);
+			const cand = entry.grid.get(key);
+			if (!cand) continue;
+			let hit = false;
+			for (const si of cand) {
+				if (distToSegment2D(v.x, v.y, entry.segments[si]) <= entry.halfW) { hit = true; break; }
+			}
+			if (!hit) continue;
+			const o = i * stride;
+			indices.push(i);
+			orig.push(arr[o], arr[o + 1], arr[o + 2]);
+			arr[o] = entry.rgb[0];
+			arr[o + 1] = entry.rgb[1];
+			arr[o + 2] = entry.rgb[2];
+		}
+		if (indices.length) {
+			colAttr.needsUpdate = true;
+			entry.backups.set(geo, { attr: colAttr, indices, orig });
+		}
+		return indices.length;
+	}
+
+	function processEntries() {
+		const actives = SIMA_ENTRIES.filter(e => e.active);
+		if (!actives.length || !V || !V.scene.pointclouds.length) return;
+		let newly = 0;
+		for (const pc of V.scene.pointclouds) {
+			pc.updateMatrixWorld(true);
+			pc.traverse((obj) => {
+				if (!obj.isPoints || !obj.geometry) return;
+				for (const entry of actives) {
+					if (entry.processed.has(obj.geometry)) continue;
+					entry.processed.add(obj.geometry);
+					// node の世界 bbox が範囲外なら走査自体を省略
+					if (obj.geometry.boundingBox) {
+						const nb = obj.geometry.boundingBox.clone().applyMatrix4(obj.matrixWorld);
+						if (nb.max.x < entry.bbox.minX || nb.min.x > entry.bbox.maxX ||
+						    nb.max.y < entry.bbox.minY || nb.min.y > entry.bbox.maxY) continue;
+					}
+					const n = colorizeGeometry(entry, obj);
+					if (n > 0) { entry.matched += n; newly += n; }
+				}
+			});
+		}
+		if (newly > 0) {
+			refreshSimaList();
+			setStatus(`境界の点群を着色: 計 ${SIMA_ENTRIES.filter(e => e.active).reduce((s, e) => s + e.matched, 0).toLocaleString()} 点`);
+		}
+	}
+
+	function ensureProcessTimer() {
+		if (processTimer == null) {
+			processTimer = setInterval(() => {
+				if (!SIMA_ENTRIES.some(e => e.active)) { clearInterval(processTimer); processTimer = null; return; }
+				processEntries();   // 新しく読み込まれた LOD node へ追い着色
+			}, 1200);
+		}
+	}
+
+	// 元の色に戻す (= 一つ戻る / 削除)。 既に unload された node は再読込時に元色で戻るため対象外で OK。
+	function restoreEntry(entry) {
+		for (const [geo, b] of entry.backups) {
+			const arr = b.attr.array;
+			const stride = b.attr.itemSize;
+			for (let k = 0; k < b.indices.length; k++) {
+				const o = b.indices[k] * stride;
+				arr[o] = b.orig[k * 3];
+				arr[o + 1] = b.orig[k * 3 + 1];
+				arr[o + 2] = b.orig[k * 3 + 2];
+			}
+			b.attr.needsUpdate = true;
+		}
+		entry.backups = new Map();
+		entry.processed = new WeakSet();
+		entry.matched = 0;
+		entry.active = false;
+		refreshSimaList();
+	}
+
+	function activateEntry(entry) {
+		entry.active = true;
+		ensureProcessTimer();
+		processEntries();
+		refreshSimaList();
+	}
+
+	function deleteEntry(entry) {
+		restoreEntry(entry);
+		const i = SIMA_ENTRIES.indexOf(entry);
+		if (i >= 0) SIMA_ENTRIES.splice(i, 1);
+		purge(entry);
+		refreshSimaList();
+	}
+
+	// ------------------------------------------------------------
+	// 読込フロー (線幅・線色は左パネルの入力欄から)
+	// ------------------------------------------------------------
+	function hexToRgb(hex) {
+		const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+		const n = m ? parseInt(m[1], 16) : 0xff0000;
+		return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+	}
+
+	function currentWidth() {
+		const v = parseFloat($('#pcs_sima_width').val());
+		return isFinite(v) && v > 0 ? v : 0.2;
+	}
+	function currentColor() {
+		return $('#pcs_sima_color').val() || '#ff0000';
+	}
+
+	function importSimaText(text, label, widthM, colorHex) {
 		const parsed = parseSima(text);
 		if (parsed.parcels.length === 0) {
-			setStatus(`画地データ (D00) がありません (座標点 ${parsed.points.size} 点のみ)。境界線は描画されません`, true);
+			setStatus(`画地データ (D00) がありません (座標点 ${parsed.points.size} 点のみ)。着色できません`, true);
 			return null;
 		}
-		const r = drawSima(parsed, label);
-		if (!r.group) {
+		const { segments, skipped } = buildSegments(parsed);
+		if (!segments.length) {
 			setStatus('画地はありますが構成点を解決できませんでした (A01 と B01 の点番号を確認してください)', true);
 			return null;
 		}
-		recordAction({ type: 'sima', obj: r.group });
+		const w = (widthM != null) ? widthM : currentWidth();
+		const col = colorHex || currentColor();
+		const halfW = w / 2;
+		const entry = {
+			label, segments, halfW, widthM: w,
+			colorHex: col, rgb: hexToRgb(col),
+			bbox: entryBBox(segments, halfW),
+			grid: buildSegmentGrid(segments, halfW),
+			active: true,
+			processed: new WeakSet(),
+			backups: new Map(),
+			matched: 0,
+		};
+		SIMA_ENTRIES.push(entry);
+		recordAction({ type: 'sima', obj: entry });
+		ensureProcessTimer();
+		processEntries();
 		refreshSimaList();
-		const fitMsg = r.fittedCount > 0
-			? `点群表面にフィット (${r.fittedCount}/${r.drawn} 画地)`
-			: '点群の高さを取得できず SIMA 標高で表示 (点群読込後に「再フィット」を押してください)';
-		setStatus(`境界線を表示: ${r.drawn} 画地 / ${fitMsg}${r.skipped ? ` / ${r.skipped} 画地は点不足でスキップ` : ''}`, r.fittedCount === 0);
-		return r.group;
+		if (entry.matched > 0) {
+			setStatus(`境界の点群を着色: ${entry.matched.toLocaleString()} 点 (線幅 ${w} m)${skipped ? ` / ${skipped} 画地は点不足でスキップ` : ''}`);
+		} else if (!V.scene.pointclouds.length) {
+			setStatus('SIMA を登録しました。点群を読み込むと自動で着色されます', true);
+		} else {
+			setStatus('境界位置に一致する点が見つかりません (位置・座標系を確認してください)', true);
+		}
+		return entry;
 	}
 
-	function importSimaFromPath(filePath) {
+	function importSimaFromPath(filePath, widthM, colorHex) {
 		const fs = window.require('fs');
 		const path = window.require('path');
 		const buf = fs.readFileSync(filePath);
 		const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-		return importSimaText(decodeSimaBuffer(ab), path.basename(filePath));
+		return importSimaText(decodeSimaBuffer(ab), path.basename(filePath), widthM, colorHex);
 	}
 
 	function pickSimaFile() {
@@ -302,21 +325,9 @@
 		inp.click();
 	}
 
-	function removeSimaGroup(group) {
-		V.scene.scene.remove(group);
-		const i = SIMA_GROUPS.indexOf(group);
-		if (i >= 0) SIMA_GROUPS.splice(i, 1);
-		refreshSimaList();
-	}
-	function restoreSimaGroup(group) {
-		V.scene.scene.add(group);
-		if (!SIMA_GROUPS.includes(group)) SIMA_GROUPS.push(group);
-		refreshSimaList();
-	}
-
 	// ------------------------------------------------------------
 	// 一つ戻る / 一つ進む
-	//   対象 = 追加操作の履歴 (計測 / 体積 / 断面 / SIMA 読込)。
+	//   対象 = 追加操作の履歴 (計測 / 体積 / 断面 / SIMA 着色)。
 	//   手動削除されたものは履歴から除去して空振りを防ぐ。
 	// ------------------------------------------------------------
 	const undoStack = [];
@@ -346,7 +357,7 @@
 			if (a.type === 'measurement') V.scene.removeMeasurement(a.obj);
 			else if (a.type === 'profile') V.scene.removeProfile(a.obj);
 			else if (a.type === 'volume') V.scene.removeVolume(a.obj);
-			else if (a.type === 'sima') removeSimaGroup(a.obj);
+			else if (a.type === 'sima') restoreEntry(a.obj);
 		} finally { internalOp = false; }
 		redoStack.push(a);
 		updateHistoryButtons();
@@ -361,7 +372,7 @@
 			if (a.type === 'measurement') V.scene.addMeasurement(a.obj);
 			else if (a.type === 'profile') V.scene.addProfile(a.obj);
 			else if (a.type === 'volume') V.scene.addVolume(a.obj);
-			else if (a.type === 'sima') restoreSimaGroup(a.obj);
+			else if (a.type === 'sima') activateEntry(a.obj);
 		} finally { internalOp = false; }
 		undoStack.push(a);
 		updateHistoryButtons();
@@ -369,7 +380,7 @@
 	}
 
 	function labelOf(a) {
-		return { measurement: '計測', profile: '断面', volume: '体積', sima: 'SIMA 境界線' }[a.type] || a.type;
+		return { measurement: '計測', profile: '断面', volume: '体積', sima: 'SIMA 着色' }[a.type] || a.type;
 	}
 
 	function hookSceneEvents() {
@@ -391,7 +402,7 @@
 	}
 
 	// ------------------------------------------------------------
-	// 左パネル UI (Potree サイドバーに「現場ツール」 section を追加)
+	// 左パネル UI
 	// ------------------------------------------------------------
 	function setStatus(msg, isWarn) {
 		const el = document.getElementById('pcs_tools_status');
@@ -413,18 +424,16 @@
 		const el = $('#pcs_sima_list');
 		if (!el.length) return;
 		el.empty();
-		for (const g of SIMA_GROUPS) {
+		for (const en of SIMA_ENTRIES) {
 			const row = $(`
 				<div style="display:flex; align-items:center; gap:6px; padding:2px 0;">
-					<span style="color:#ff5252;">━</span>
-					<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${g.name.replace('SIMA: ', '')}</span>
-					<input type="button" value="再フィット" style="width:auto;" title="点群の表面高さに合わせ直す"/>
+					<span style="display:inline-block; width:12px; height:12px; background:${en.colorHex}; border:1px solid #888; flex:none;"></span>
+					<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
+						title="線幅 ${en.widthM} m / ${en.matched.toLocaleString()} 点">${en.label}${en.active ? '' : ' (非表示)'}</span>
 					<input type="button" value="削除" style="width:auto;"/>
 				</div>
 			`);
-			const btns = row.find('input');
-			$(btns[0]).click(() => refitSimaGroup(g));
-			$(btns[1]).click(() => { removeSimaGroup(g); purge(g); setStatus('境界線を削除しました'); });
+			row.find('input').click(() => { deleteEntry(en); setStatus('着色を解除しました'); });
 			el.append(row);
 		}
 	}
@@ -437,8 +446,15 @@
 		const content = section.last();
 		content.html(`
 			<div class="pv-menu-list">
-				<div class="divider"><span>SIMA 境界線</span></div>
-				<input id="pcs_sima_import" type="button" value="SIMA 読込 (境界線を赤線表示)" style="width:100%;"/>
+				<div class="divider"><span>SIMA 境界線 (点群を着色)</span></div>
+				<div style="display:flex; align-items:center; gap:6px; padding:2px 0;">
+					<span>線幅</span>
+					<input id="pcs_sima_width" type="number" value="0.2" min="0.05" step="0.05" style="width:64px;"/>
+					<span>m</span>
+					<span style="margin-left:8px;">線色</span>
+					<input id="pcs_sima_color" type="color" value="#ff0000" style="width:42px; height:24px; padding:0;"/>
+				</div>
+				<input id="pcs_sima_import" type="button" value="SIMA 読込 (境界の点を着色)" style="width:100%;"/>
 				<div id="pcs_sima_list"></div>
 				<div class="divider"><span>編集履歴</span></div>
 				<span style="display:flex; gap:6px;">
@@ -473,8 +489,8 @@
 	// 自動テスト・将来機能用の内部 handle
 	window.PCS_TOOLS = {
 		parseSima, importSimaText, importSimaFromPath,
-		undo, redo, refitSimaGroup, heightAt, buildHeightSampler,
-		get simaGroups() { return SIMA_GROUPS; },
+		undo, redo, processEntries,
+		get simaEntries() { return SIMA_ENTRIES; },
 		get undoCount() { return undoStack.length; },
 		get redoCount() { return redoStack.length; },
 	};
