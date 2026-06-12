@@ -522,6 +522,9 @@
 				</div>
 				<input id="pcs_sima_import" type="button" value="SIMA 読込" style="width:100%;" title="境界線の位置の点群を着色します"/>
 				<div id="pcs_sima_list"></div>
+				<div class="divider"><span>SIMA 出力</span></div>
+				<input id="pcs_sima_export" type="button" value="SIMA 出力" style="width:100%;"
+					title="ポイント計測と距離計測 (結線 = 開放区画) を SIMA に一括書き出し (点名は自動付番)"/>
 				<div class="divider"><span>編集履歴</span></div>
 				<span style="display:flex; gap:6px;">
 					<input id="pcs_undo" type="button" value="← 戻る" style="flex:1;" title="一つ戻る (Ctrl+Z)"/>
@@ -534,9 +537,116 @@
 		section.insertBefore($('#menu_appearance'));
 		content.show();
 		$('#pcs_sima_import').click(pickSimaFile);
+		$('#pcs_sima_export').click(exportSima);
 		$('#pcs_undo').click(undo);
 		$('#pcs_redo').click(redo);
 		updateHistoryButtons();
+	}
+
+	// ------------------------------------------------------------
+	// SIMA 出力 (= 計測の一括書き出し)
+	//   構造 (X:\調査士\SIMAデータの構造詳細.docx + WebGIS src/sima.js 準拠):
+	//     G00 → Z00,座標ﾃﾞｰﾀ → A00 → A01… → A99 → Z00,区画ﾃﾞｰﾀ → D00/B01…/D99 → G99
+	//   - ポイント計測 → A01 座標のみ
+	//   - 距離計測 → 結線 = 開放区画 (D00/B01…/D99 を閉合させない = 先頭点を末尾で繰り返さない)
+	//   - 点番号・点名は 1 からの自動付番
+	//   - 座標系: viewer x=東/y=北 → SIMA X=北/Y=東 に入替え。 標高も出力
+	//   - encoding は Shift-JIS (測量 CAD の事実上の標準。 WebGIS と同じ逆引き表方式)
+	// ------------------------------------------------------------
+	let _sjisMap = null;
+	function buildSjisMap() {
+		const dec = new TextDecoder('shift-jis');
+		const map = new Map();
+		const reg = (ch, bytes) => {
+			if (ch && ch.length === 1 && ch.charCodeAt(0) !== 0xFFFD && !map.has(ch)) map.set(ch, bytes);
+		};
+		for (let b = 0; b <= 0xFF; b++) reg(dec.decode(new Uint8Array([b])), [b]);
+		for (let lead = 0x81; lead <= 0xFC; lead++) {
+			if (lead > 0x9F && lead < 0xE0) continue;
+			for (let trail = 0x40; trail <= 0xFC; trail++) {
+				reg(dec.decode(new Uint8Array([lead, trail])), [lead, trail]);
+			}
+		}
+		return map;
+	}
+	function encodeShiftJis(str) {
+		if (!_sjisMap) _sjisMap = buildSjisMap();
+		const out = [];
+		for (const ch of str) {
+			const bytes = _sjisMap.get(ch);
+			if (bytes) out.push(...bytes);
+			else out.push(0x3F);   // cp932 非対応文字は '?'
+		}
+		return new Uint8Array(out);
+	}
+
+	// 出力対象の判定
+	function isPointMeasure(m) {
+		return m.showCoordinates && m.points.length === 1;
+	}
+	function isDistanceMeasure(m) {
+		return m.showDistances && !m.closed && !m.showHeight && !m.showAzimuth &&
+			!m.showCircle && !m.showArea && m.points.length >= 2;
+	}
+
+	// SIMA テキスト生成 (純関数: テストから直接検証できる)
+	function buildSimaText(siteName) {
+		const pointMeasures = V.scene.measurements.filter(isPointMeasure);
+		const distMeasures = V.scene.measurements.filter(isDistanceMeasure);
+		if (!pointMeasures.length && !distMeasures.length) return null;
+
+		const f3 = (v) => v.toFixed(3);
+		const lines = [];
+		lines.push(`G00,01,${siteName || '現場データ'},`);
+		lines.push('Z00,座標ﾃﾞｰﾀ,');
+		lines.push('A00,');
+
+		let no = 0;
+		const a01 = (p) => {
+			no++;
+			// SIMA: X=北 (= viewer y) / Y=東 (= viewer x)
+			lines.push(`A01,${no},${no},${f3(p.y)},${f3(p.x)},${f3(p.z)},,`);
+			return no;
+		};
+		for (const m of pointMeasures) a01(m.points[0].position);
+		const parcels = [];
+		for (const m of distMeasures) {
+			const ids = m.points.map(pt => a01(pt.position));
+			parcels.push({ name: m.name && m.name !== 'Distance' ? m.name : `結線${parcels.length + 1}`, ids });
+		}
+		lines.push('A99,');
+
+		if (parcels.length) {
+			lines.push('Z00,区画ﾃﾞｰﾀ,');
+			parcels.forEach((pc, i) => {
+				lines.push(`D00,${i + 1},${pc.name},1,`);
+				// 開放区画 = 点列をそのまま並べ、 先頭点を末尾で繰り返さない (= 閉合しない)
+				for (const id of pc.ids) lines.push(`B01,${id},${id},`);
+				lines.push('D99,');
+			});
+		}
+		lines.push('G99,');
+		return { text: lines.join('\r\n') + '\r\n', points: no, parcels: parcels.length };
+	}
+
+	function exportSima() {
+		const siteName = (window.PCS_PROJECT && window.PCS_PROJECT.site) ? window.PCS_PROJECT.site.displayName : '現場データ';
+		const r = buildSimaText(siteName);
+		if (!r) { setStatus('出力する計測がありません (ポイント / 距離計測を作成してください)', true); return null; }
+		const fs = window.require('fs');
+		const path = window.require('path');
+		const os = window.require('os');
+		const d = new Date();
+		const p2 = (n) => String(n).padStart(2, '0');
+		const fname = `${siteName}_${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}.sim`;
+		const dir = (window.PCS_PROJECT && window.PCS_PROJECT.site)
+			? path.join(window.PCS_PROJECT.site.dir, 'export')
+			: path.join(os.homedir(), 'Downloads');
+		if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+		const out = path.join(dir, fname);
+		fs.writeFileSync(out, Buffer.from(encodeShiftJis(r.text)));
+		try { window.require('electron').shell.showItemInFolder(out); } catch (_) {}
+		return out;
 	}
 
 	// ------------------------------------------------------------
@@ -660,6 +770,7 @@
 	window.PCS_TOOLS = {
 		parseSima, importSimaText, importSimaFromPath,
 		undo, redo, processEntries, setEntryWidth, setEntryColor, renameEntry,
+		buildSimaText, exportSima, encodeShiftJis,
 		get simaEntries() { return SIMA_ENTRIES; },
 		get undoCount() { return undoStack.length; },
 		get redoCount() { return redoStack.length; },
