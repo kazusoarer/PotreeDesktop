@@ -333,12 +333,12 @@
 		ensureProcessTimer();
 		processEntries();
 		refreshSimaList();
-		if (entry.matched > 0) {
-			setStatus(`境界の点群を着色: ${entry.matched.toLocaleString()} 点 (線幅 ${w} m)${skipped ? ` / ${skipped} 画地は点不足でスキップ` : ''}`);
-		} else if (!V.scene.pointclouds.length) {
-			setStatus('SIMA を登録しました。点群を読み込むと自動で着色されます', true);
+		// 成功時は何も表示しない (ユーザー指示)。 何も起きない理由がある時だけ警告する。
+		if (entry.matched === 0) {
+			if (!V.scene.pointclouds.length) setStatus('SIMA を登録しました。点群を読み込むと自動で着色されます', true);
+			else setStatus('境界位置に一致する点が見つかりません (位置・座標系を確認してください)', true);
 		} else {
-			setStatus('境界位置に一致する点が見つかりません (位置・座標系を確認してください)', true);
+			setStatus('');
 		}
 		return entry;
 	}
@@ -403,7 +403,6 @@
 		} finally { internalOp = false; }
 		redoStack.push(a);
 		updateHistoryButtons();
-		setStatus(`一つ戻りました (${labelOf(a)})`);
 	}
 
 	function redo() {
@@ -418,7 +417,6 @@
 		} finally { internalOp = false; }
 		undoStack.push(a);
 		updateHistoryButtons();
-		setStatus(`一つ進みました (${labelOf(a)})`);
 	}
 
 	function labelOf(a) {
@@ -495,7 +493,7 @@
 				});
 				inp.on('blur', commit);
 			});
-			row.find('.pcs-row-del').click(() => { deleteEntry(en); setStatus('着色を解除しました'); });
+			row.find('.pcs-row-del').click(() => { deleteEntry(en); setStatus(''); });
 			el.append(row);
 		}
 	}
@@ -545,7 +543,6 @@
 		buildSidebarSection();
 		hookSceneEvents();
 		hookKeyboard();
-		setStatus('準備完了');
 	};
 
 	// 自動テスト・将来機能用の内部 handle
