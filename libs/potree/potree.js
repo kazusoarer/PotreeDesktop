@@ -72498,17 +72498,21 @@ void main() {
 
 				if (flatten === true) {
 
+					// pcs 修正 (2026-06-12): 断面 DXF (2D) を正面投影で出力する。
+					// 旧実装は x=追加距離 / y=0 / z=標高 (= 断面が XZ 平面に寝る) のため、
+					// 2 次元 CAD (XY 平面 = 真上表示) では一直線にしか見えなかった。
+					// x=追加距離 / y=標高 / z=0 にすることで 2D CAD でそのまま断面形状が見える。
 					pointsXYZ.x.push(poMileage);
-					pointsXYZ.y.push(0);
-					pointsXYZ.z.push(poCoordZ);
+					pointsXYZ.y.push(poCoordZ);
+					pointsXYZ.z.push(0);
 
 					// Get boundaries X
 					if (pointsXYZ.maxX < poMileage) pointsXYZ.maxX = poMileage;
 					if (pointsXYZ.minX > poMileage) pointsXYZ.minX = poMileage;
 
-					// Get boundaries Z
-					if (pointsXYZ.maxZ < poCoordZ) pointsXYZ.maxZ = poCoordZ;
-					if (pointsXYZ.minZ > poCoordZ) pointsXYZ.minZ = poCoordZ;
+					// Get boundaries Y (= 標高)
+					if (pointsXYZ.maxY < poCoordZ) pointsXYZ.maxY = poCoordZ;
+					if (pointsXYZ.minY > poCoordZ) pointsXYZ.minY = poCoordZ;
 
 				} else {
 
@@ -72533,9 +72537,9 @@ void main() {
 			}
 
 			if (flatten === true) {
-				// Set boundaries Y
-				pointsXYZ.maxY = 0;
-				pointsXYZ.minY = 0;
+				// pcs 修正: 正面投影では Z (奥行) = 0
+				pointsXYZ.maxZ = 0;
+				pointsXYZ.minZ = 0;
 			}
 
 			pointsXYZ.numPoints = points.numPoints;
@@ -90653,6 +90657,7 @@ ENDSEC
 	exports.framenumber = framenumber;
 	exports.loadPointCloud = loadPointCloud$1;
 	exports.loadProject = loadProject;
+	exports.DXFProfileExporter = DXFProfileExporter;   // pcs: 断面 DXF のテスト検証用に公開
 	exports.lru = lru;
 	exports.maxNodesLoading = maxNodesLoading;
 	exports.numNodesLoading = numNodesLoading;
