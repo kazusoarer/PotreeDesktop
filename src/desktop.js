@@ -408,7 +408,16 @@ export function hideDropzones(){
 	element.style.display = "none";
 }
 
+// pcs: ファイルのドラッグだけに反応する (= ツリーラベルや文字列のドラッグで
+// LAZ 投入画面が誤表示される問題の修正。 2026-06-12 ユーザー指摘)
+export function isFileDrag(e){
+	const types = e.dataTransfer && e.dataTransfer.types;
+	return !!types && Array.from(types).includes('Files');
+}
+
 export function dragEnter(e) {
+	if(!isFileDrag(e)) return;
+
 	e.dataTransfer.dropEffect = 'copy';
 
 	e.preventDefault();
@@ -422,6 +431,8 @@ export function dragEnter(e) {
 }
 
 export function dragOver(e){
+	if(!isFileDrag(e)) return;
+
 	e.preventDefault();
 	e.stopPropagation();
 
@@ -442,6 +453,8 @@ export function dragLeave(e){
 
 export async function dropHandler(event){
 	// console.log(event);
+	if(!isFileDrag(event)) return;   // pcs: 文字列等のドロップは無視
+
 	event.preventDefault();
 	event.stopPropagation();
 
