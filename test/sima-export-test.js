@@ -77,8 +77,9 @@
 			return t.length === 2 && t[0] === 0x83 && t[1] === 0x65;
 		})());
 
-		// ファイル出力 (現場なし → Downloads) — 出力先だけ検証して削除
-		const out = PT.exportSima();
+		// ファイル出力 (テストは明示パス指定。 UI 経路は保存ダイアログ = 自動化不可のため
+		// download anchor の生成までを別途確認)
+		const out = PT.exportSima(path.join(os.tmpdir(), 'pcs_export_test.sim'));
 		check('E13 ファイル出力成功 (.sim)', out && fs.existsSync(out) && out.endsWith('.sim'), out);
 		if (out) {
 			const buf = fs.readFileSync(out);

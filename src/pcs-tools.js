@@ -629,24 +629,28 @@
 		return { text: lines.join('\r\n') + '\r\n', points: no, parcels: parcels.length };
 	}
 
-	function exportSima() {
+	// 出力後に保存ダイアログで場所を指定できる (= ブラウザ download 経由。 Electron が
+	// 保存先選択ダイアログを表示する)。 outPath 指定時は直接書込み (自動テスト用)。
+	function exportSima(outPath) {
 		const siteName = (window.PCS_PROJECT && window.PCS_PROJECT.site) ? window.PCS_PROJECT.site.displayName : '現場データ';
 		const r = buildSimaText(siteName);
 		if (!r) { setStatus('出力する計測がありません (ポイント / 距離計測を作成してください)', true); return null; }
-		const fs = window.require('fs');
-		const path = window.require('path');
-		const os = window.require('os');
+		const bytes = encodeShiftJis(r.text);
+		if (outPath) {
+			const fs = window.require('fs');
+			fs.writeFileSync(outPath, Buffer.from(bytes));
+			return outPath;
+		}
 		const d = new Date();
 		const p2 = (n) => String(n).padStart(2, '0');
 		const fname = `${siteName}_${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}.sim`;
-		const dir = (window.PCS_PROJECT && window.PCS_PROJECT.site)
-			? path.join(window.PCS_PROJECT.site.dir, 'export')
-			: path.join(os.homedir(), 'Downloads');
-		if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-		const out = path.join(dir, fname);
-		fs.writeFileSync(out, Buffer.from(encodeShiftJis(r.text)));
-		try { window.require('electron').shell.showItemInFolder(out); } catch (_) {}
-		return out;
+		const blob = new Blob([bytes], { type: 'application/octet-stream' });
+		const a = document.createElement('a');
+		a.href = URL.createObjectURL(blob);
+		a.download = fname;
+		a.click();
+		setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+		return fname;
 	}
 
 	// ------------------------------------------------------------
