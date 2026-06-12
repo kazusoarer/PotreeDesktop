@@ -341,13 +341,12 @@
 				<div class="pcs-site-row" style="display:flex; align-items:center; gap:6px; padding:3px 0;">
 					<span class="pcs-site-open" style="flex:none; cursor:pointer; font-size:115%;" title="この現場を開く">📂</span>
 					<span class="pcs-site-nm" style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
-					<span style="color:#999; font-size:85%; flex:none;">${fmtDate(s.updatedAt)}</span>
 					<input type="button" value="削除" style="width:auto;"/>
 				</div>
 			`);
 			const nm = row.find('.pcs-site-nm');
 			nm.text(s.displayName + (isCurrent ? ' (作業中)' : ''));
-			nm.attr('title', s.dir + '\nダブルクリックで名前を変更');
+			nm.attr('title', `更新: ${fmtDate(s.updatedAt)}\n${s.dir}\nダブルクリックで名前を変更`);
 			row.find('.pcs-site-open').click(() => { if (!isCurrent) openSiteFile(s.file); });
 			nm.on('dblclick', function () {
 				const inp = $('<input type="text" style="flex:1; min-width:60px;">').val(s.displayName);
