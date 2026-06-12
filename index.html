@@ -390,9 +390,19 @@
 			if (e.error) viewer.postError(e.error.message);
 		});
 
-		// pcs: 開発専用の自動テストフック (env PCS_TEST に script path を渡した時だけ動く)
+		// pcs: 開発専用の自動テストフック (env PCS_TEST、 またはショートカット起動でも使える
+		// flag file 方式 = %TEMP%\pcs_autorun_test.txt に script path。 読取り後すぐ削除されるため
+		// 通常起動には一切影響しない)
 		try {
-			const testPath = (typeof process !== 'undefined') && process.env && process.env.PCS_TEST;
+			let testPath = (typeof process !== 'undefined') && process.env && process.env.PCS_TEST;
+			if (!testPath && typeof process !== 'undefined') {
+				const fsN = require('fs');
+				const flag = require('path').join(require('os').tmpdir(), 'pcs_autorun_test.txt');
+				if (fsN.existsSync(flag)) {
+					testPath = fsN.readFileSync(flag, 'utf8').trim();
+					fsN.unlinkSync(flag);
+				}
+			}
 			if (testPath) {
 				const code = require('fs').readFileSync(testPath, 'utf8');
 				setTimeout(() => { try { new Function(code)(); } catch (err) { console.error('[pcs-test]', err); } }, 1500);

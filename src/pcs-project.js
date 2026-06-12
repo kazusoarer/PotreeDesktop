@@ -359,20 +359,41 @@
 		return { prebuiltDir, sceneJson, projectName, multi };
 	}
 
+	// 公開スクリプトは PowerShell 7 必須 (#requires -Version 7.0)。
+	// Windows 標準の powershell.exe (5.1) では即拒否されるため、 必ず pwsh を使う。
+	function pwshPath() {
+		const cands = [
+			'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+			'C:\\Program Files\\PowerShell\\7-preview\\pwsh.exe',
+		];
+		for (const c of cands) { try { if (fs.existsSync(c)) return c; } catch (_) {} }
+		return 'pwsh.exe';   // PATH 解決に任せる
+	}
+
 	function publishSite() {
 		const a = buildPublishArgs();
 		if (a.error) { setWarn(a.error); return; }
 		if (!fs.existsSync(PUBLISH_SCRIPT)) { setWarn('公開スクリプトが見つかりません: ' + PUBLISH_SCRIPT); return; }
 		const note = a.multi ? '\n(複数点群のうち最初の 1 つを公開します)' : '';
 		if (!window.confirm(`現場「${a.projectName}」を URL 公開します。\n限定 URL / 30 日で自動削除。 いまの計測・クリッピング・視点もそのまま相手に表示されます。${note}\nよろしいですか?`)) return;
-		const { spawn } = window.require('child_process');
-		const child = spawn('powershell.exe', [
-			'-NoExit', '-ExecutionPolicy', 'Bypass', '-File', PUBLISH_SCRIPT,
+		const dryRun = process.env.PCS_PUBLISH_DRYRUN === '1';   // 自動テスト用
+		// -NoProfile 必須: ユーザーの profile が CLOUDFLARE_API_TOKEN を Pages 用トークンで
+		// 上書きしており、 そのトークンでは公開が認証エラーになる (2026-06-13 実機特定)。
+		const args = [
+			'-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', PUBLISH_SCRIPT,
 			'-PrebuiltDir', a.prebuiltDir,
 			'-SceneJsonPath', a.sceneJson,
 			'-ProjectName', a.projectName,
-		], { cwd: 'C:\\potree_share', detached: true, stdio: 'ignore', windowsHide: false });
-		child.unref();
+		];
+		if (dryRun) args.push('-SkipDeploy');
+		else args.unshift('-NoExit');   // 進捗ウィンドウを閉じず URL を確認できるように
+		const { spawn } = window.require('child_process');
+		const child = spawn(pwshPath(), args, {
+			cwd: 'C:\\potree_share', detached: !dryRun, stdio: 'ignore', windowsHide: false,
+		});
+		child.on('error', (e) => setWarn('公開の起動に失敗: ' + e.message));
+		window.PCS_PROJECT._lastPublish = child;   // テスト検証用
+		if (!dryRun) child.unref();
 	}
 
 	function pickProjectFile() {
