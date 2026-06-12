@@ -120,6 +120,15 @@
 				$('#pcs_site_name').text().startsWith('佐藤2丁目 境界確認'), PJ.site && PJ.site.displayName);
 			check('S20 開いた直後は未保存マークなし', !PJ.dirty);
 
+			// URL 公開引数 (現場あり = 現場フォルダ内 octree を解決)
+			{
+				const a = PJ.buildPublishArgs();
+				check('S20b 公開引数 (現場あり): 現場フォルダの octree + scene',
+					!a.error && a.prebuiltDir.includes('\\data\\') &&
+					fs.existsSync(path.join(a.prebuiltDir, 'metadata.json')) && fs.existsSync(a.sceneJson),
+					a.error || a.prebuiltDir);
+			}
+
 			// 旧 Export json5 (現場管理外・絶対パス) 互換
 			const legacy = path.join(T, 'legacy_test.json5');
 			fs.writeFileSync(legacy, JSON.stringify(Potree.saveProject(V), null, '\t'), 'utf8');
@@ -135,6 +144,16 @@
 			check('S21 旧 Export json5 が開ける (点群)', ok);
 			check('S22 旧形式でも計測が復元', V.scene.measurements.length === 1, String(V.scene.measurements.length));
 			check('S23 旧形式は現場扱いしない', PJ.site === null);
+
+			// URL 公開引数 (現場なし = 表示中の点群の octree から解決。 本件の修正)
+			{
+				const a = PJ.buildPublishArgs();
+				check('S23b 公開引数 (現場なし): 点群の octree から解決できる',
+					!a.error && a.prebuiltDir &&
+					fs.existsSync(path.join(a.prebuiltDir, 'metadata.json')) && fs.existsSync(a.sceneJson),
+					a.error || a.prebuiltDir);
+				check('S23c 現場なしでも projectName が決まる', !a.error && !!a.projectName, a.projectName);
+			}
 			const sites = PJ.scanSites();
 			check('S24 現場一覧は維持 (1 件・名前一致)', sites.length === 1 && sites[0].displayName === '佐藤2丁目 境界確認',
 				JSON.stringify(sites.map(s => s.displayName)));

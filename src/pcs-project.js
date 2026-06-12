@@ -316,22 +316,47 @@
 	// ------------------------------------------------------------
 	const PUBLISH_SCRIPT = 'C:\\potree_share\\publish-pointcloud.ps1';
 
+	// 点群の octree dir (metadata.json/octree.bin/hierarchy.bin が揃うフォルダ) を解決
+	function octreeDirOf(pc) {
+		try {
+			let u = pc && pc.pcoGeometry && pc.pcoGeometry.url;
+			if (!u) return null;
+			u = decodeURIComponent(String(u).replace(/^file:\/+/i, '')).replace(/\//g, '\\');
+			const dir = path.dirname(u);   // metadata.json の親 = octree dir
+			const ok = ['metadata.json', 'octree.bin', 'hierarchy.bin'].every(f => fs.existsSync(path.join(dir, f)));
+			return ok ? dir : null;
+		} catch (_) { return null; }
+	}
+
 	function buildPublishArgs() {
-		if (!SITE) return { error: '公開する現場がありません (点群を読み込んでください)' };
-		const dataDir = path.join(SITE.dir, 'data');
-		let clouds = [];
-		try { clouds = fs.readdirSync(dataDir).filter(d => fs.existsSync(path.join(dataDir, d, 'metadata.json'))); } catch (_) {}
-		if (!clouds.length) return { error: '公開できる点群がありません' };
+		const pcs = V.scene.pointclouds;
+		if (!pcs.length) return { error: '公開する点群がありません (点群を読み込んでください)' };
+
+		// 公開対象の octree dir: 現場があれば現場フォルダ内、 なければ表示中の点群から解決
+		let prebuiltDir = null, multi = false;
+		if (SITE) {
+			const dataDir = path.join(SITE.dir, 'data');
+			let clouds = [];
+			try { clouds = fs.readdirSync(dataDir).filter(d => fs.existsSync(path.join(dataDir, d, 'metadata.json'))); } catch (_) {}
+			if (clouds.length) { prebuiltDir = path.join(dataDir, clouds[0]); multi = clouds.length > 1; }
+		}
+		if (!prebuiltDir) {
+			// 現場未登録 (= 旧 json / 変換済みフォルダを直接開いた等) でも、 表示中の点群から公開
+			const resolved = pcs.map(octreeDirOf).filter(Boolean);
+			if (!resolved.length) return { error: '点群の変換済みデータ (octree) が見つからないため公開できません' };
+			prebuiltDir = resolved[0];
+			multi = resolved.length > 1;
+		}
+
 		const scene = Potree.saveProject(V);
 		scene.pointclouds = [];   // 点群はローカルパス参照のため除外 (Web 側は R2 の URL から読む)
-		const sceneJson = path.join(SITE.dir, 'publish_scene.json');
+		const baseDir = SITE ? SITE.dir : os.tmpdir();
+		const sceneJson = path.join(baseDir, 'publish_scene.json');
 		fs.writeFileSync(sceneJson, JSON.stringify(scene), 'utf8');
-		return {
-			prebuiltDir: path.join(dataDir, clouds[0]),
-			sceneJson,
-			projectName: SITE.displayName,
-			multi: clouds.length > 1,
-		};
+
+		const projectName = SITE ? SITE.displayName
+			: (pcs[0].name || path.basename(prebuiltDir) || '無題');
+		return { prebuiltDir, sceneJson, projectName, multi };
 	}
 
 	function publishSite() {
