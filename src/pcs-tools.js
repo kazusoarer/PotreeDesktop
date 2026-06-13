@@ -847,6 +847,7 @@
 	let stickyActive = null;    // { tool, el }
 	let stickyMeasure = null;   // 進行中の計測 object
 	let stickyClicks = 0;       // 今回の挿入で確定した左クリック数
+	let stickyRightClicks = 0;  // 連続した右クリック数 (= 左クリックでリセット。 2 でツール解除)
 
 	function stickyStart() {
 		if (!stickyActive) return;
@@ -863,6 +864,7 @@
 		stickyActive = null;
 		stickyMeasure = null;
 		stickyClicks = 0;
+		stickyRightClicks = 0;
 		if (cancelInsertion) V.dispatchEvent({ type: 'cancel_insertions' });
 	}
 
@@ -913,18 +915,26 @@
 			const m = stickyMeasure;
 			const kind = stickyActive.tool.kind;
 			const mm = (kind === 'measure' && m && isFinite(m.maxMarkers)) ? m.maxMarkers : Infinity;
-			if (e.button === 0) stickyClicks++;
+			if (e.button === 0) { stickyClicks++; stickyRightClicks = 0; }
+			else if (e.button === 2) stickyRightClicks++;
 			const clicks = stickyClicks;
+			const rclicks = stickyRightClicks;
 			setTimeout(() => {
 				if (!stickyActive || stickyMeasure !== m) return;
 				if (e.button === 2) {
-					// 右クリック = 確定して次へ。 規定点数前の作りかけ (未確定点入り) は破棄
+					// 作りかけ (未確定点入り) の計測は破棄、 点なしは掃除
 					if (isFinite(mm) && clicks < mm && m && m.points && m.points.length > 0) {
 						try { V.scene.removeMeasurement(m); } catch (_) {}
 					} else {
 						cleanupEmpty(m, kind);
 					}
-					stickyStart();
+					if (rclicks >= 2) {
+						// 右クリック 2 回 = 連続計測モードを完全解除 (ハイライト消灯)
+						stickyStop(true);
+					} else {
+						// 右クリック 1 回 = 現在の計測を確定して次へ (連続)
+						stickyStart();
+					}
 				} else if (e.button === 0 && isFinite(mm) && clicks >= mm) {
 					stickyStart();   // 規定点数ぶん確定 = 完了して次へ
 				}

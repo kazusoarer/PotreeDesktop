@@ -58,13 +58,13 @@
 		await mouseUp(0);
 		check(`${name}: 左クリックでは継続中`, PT.sticky.measure === m0);
 		await mouseUp(2);
-		check(`${name}: 右クリック確定で次を自動開始`, PT.sticky.measure !== m0 && PT.sticky.active);
-		// 点を置かず確定 → ゴミを残さない
+		check(`${name}: 右クリック 1 回で確定 → 次を自動開始 (継続)`, PT.sticky.measure !== m0 && PT.sticky.active);
+		// 続けて右クリック 2 回目 = 完全解除
 		const mEmpty = PT.sticky.measure;
 		await mouseUp(2);
 		const list = isProfile ? V.scene.profiles : V.scene.measurements;
-		check(`${name}: 空確定はゴミを残さない`, !list.includes(mEmpty) && PT.sticky.active);
-		el.click();   // OFF
+		check(`${name}: 右クリック 2 回目で完全解除 + ゴミなし`,
+			!PT.sticky.active && !el.hasClass('pcs-sticky-on') && !list.includes(mEmpty));
 		check(`${name}: 解除`, !PT.sticky.active);
 	}
 
@@ -97,15 +97,38 @@
 			hIcon.click();
 		}
 
-		// 規定点数前の右クリック = 作りかけを破棄して次へ
+		// 規定点数前の右クリック = 作りかけを破棄して次へ (1 回目は継続)
 		{
 			const hIcon = icon('height.svg');
 			hIcon.click();
 			const m = PT.sticky.measure;
 			await mouseUp(0);   // 1/2 クリック (未完成)
-			await mouseUp(2);   // 右クリック
-			check('作りかけ (高さ 1/2 点) は右クリックで破棄', !V.scene.measurements.includes(m) && PT.sticky.active);
+			await mouseUp(2);   // 右クリック 1 回目
+			check('作りかけ (高さ 1/2 点) は右クリックで破棄 + 継続', !V.scene.measurements.includes(m) && PT.sticky.active);
 			hIcon.click();
+		}
+
+		// 右クリック 2 回で完全解除 (規定点数ツール = Point でも有効)
+		{
+			const ptIcon = icon('point.svg');
+			ptIcon.click();
+			check('Point: ON', PT.sticky.active && ptIcon.hasClass('pcs-sticky-on'));
+			await mouseUp(2);   // 1 回目 = 継続
+			check('Point: 右クリック 1 回目は継続', PT.sticky.active);
+			await mouseUp(2);   // 2 回目 = 解除
+			check('Point: 右クリック 2 回で完全解除', !PT.sticky.active && !ptIcon.hasClass('pcs-sticky-on'));
+		}
+
+		// 左クリックを挟むと右クリックカウントはリセット (= 誤解除しない)
+		{
+			const dIcon = icon('distance.svg');
+			dIcon.click();
+			await mouseUp(2);   // 右 1 回目 (継続)
+			await mouseUp(0);   // 左クリック = カウントリセット
+			await mouseUp(2);   // 右 (リセット後の 1 回目 → 継続、 解除しない)
+			check('左クリックを挟むと右クリック 2 連続が切れて誤解除しない', PT.sticky.active);
+			await mouseUp(2);   // もう 1 回 = 2 連続で解除
+			check('その後の右クリック 2 連続で解除', !PT.sticky.active);
 		}
 
 		// 後始末: テストで作った計測を全削除
